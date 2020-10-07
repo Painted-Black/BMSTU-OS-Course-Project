@@ -1,0 +1,17 @@
+state
+usage
+flags
+on_cpu
+cpu
+prio
+static_prio;
+normal_prio;
+rt_priority;
+
+PID, user,  PRI, State, Command, on_cpu, cpu, flagsm,
+number of physical memory pages used by the process,
+the amount of virtual address space used (active and total), utime, stime,
+PGRP, TPGID, The number of threads in the process,
+кол-во открытых файлов
+
+Создание модуля ядра для сбора информации о запущенных процессах (см. выше)
