@@ -2,9 +2,10 @@
 CURRENT = $(shell uname -r)
 KDIR = /lib/modules/$(CURRENT)/build
 PWD = $(shell pwd)
-TARGET = my_kern_read
+TARGET1 = my_kallsyms_lookup_name_mod
+TARGET2 = test_mod
 
-obj-m := $(TARGET).o 
+obj-m := $(TARGET1).o $(TARGET2).o 
 
 default:
 	$(MAKE) -I /usr/include/x86_64-linux-gnu -C $(KDIR) M=$(PWD) modules
