@@ -1,6 +1,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
-
+#include <linux/slab.h>
 #include <linux/fs.h>
 #include <asm/segment.h>
 #include <asm/uaccess.h>
@@ -30,19 +30,17 @@ void file_close(struct file *file)
     filp_close(file, NULL);
 }
 
-int file_read(struct file *file, unsigned long long offset, unsigned char *data, unsigned int size) 
+void my_str_replace(char* str, size_t len, char what, char with)
 {
-    //mm_segment_t oldfs;
-    int ret;
-
-    //oldfs = get_fs();
-    //set_fs(get_fs());
-
-    ret = kernel_read(file, data, size, &offset);
-
-    //set_fs(oldfs);
-    return ret;
-}  
+	size_t i;
+	for (i = 0; i < len; ++i)
+	{
+		if (str[i] == what)
+		{
+			str[i] = with;
+		}
+	}
+}
 
 static int fh_init(void)
 {
@@ -57,21 +55,25 @@ static int fh_init(void)
 		printk(KERN_INFO "KERN_READ: cannot open file\n");
 	}
 
-	size_t buffsiz = 100;
-	char data_buff[buffsiz];
+	size_t buffsiz = 50;
 	loff_t offset = 0;
-	int max_count = 100;
+	int max_count = 10;
 	int cur_count = 0;
+	loff_t inner_offset = 0;
 	int res = 1;
 	while (cur_count < max_count && res > 0)
 	{
+		char data_buff[buffsiz];
+		offset = inner_offset;
 		res = kernel_read(filp, data_buff, buffsiz, &offset);
+		printk(KERN_INFO "KERN_READ: res %d\n", res);
 		if (res > 0)
 		{
+			my_str_replace(data_buff, res, '\n', '\0');
 			printk(KERN_INFO "KERN_READ: read %s\n", data_buff);
-			offset += res;
-			count++;
+			inner_offset += strlen(data_buff) + 1;
 		}
+		cur_count++;
 	}
 	
 	file_close(filp);
