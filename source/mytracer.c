@@ -28,21 +28,20 @@ MODULE_LICENSE("GPL");
 #define USE_FENTRY_OFFSET 0
 
 /**
- * struct ftrace_hook - describes a single hook to install
+ * struct ftrace_hook - описывает перехватываемую функцию
  *
- * @name:     name of the function to hook
+ * @name:       имя перехватываемой функции
  *
- * @function: pointer to the function to execute instead
+ * @function:   адрес функции-обёртки, которая будет вызываться вместо
+ *              перехваченной функции
  *
- * @original: pointer to the location where to save a pointer
- *            to the original function
+ * @original:   указатель на место, куда следует записать адрес
+ *              перехватываемой функции, заполняется при установке
  *
- * @address:  kernel address of the function entry
+ * @address:    адрес перехватываемой функции, выясняется при установке
  *
- * @ops:      ftrace_ops state for this function hook
- *
- * The user should fill in only &name, &hook, &orig fields.
- * Other fields are considered implementation details.
+ * @ops:        служебная информация ftrace, инициализируется нулями,
+ *              при установке перехвата будет доинициализирована
  */
 struct ftrace_hook {
 	const char *name;
@@ -53,18 +52,26 @@ struct ftrace_hook {
 	struct ftrace_ops ops;
 };
 
+/**
+ * fh_resolve_hook_address() - поиск адреса функции, 
+ * 							   которую будем перехватывать
+ * @hook: хук, в котором заполнено поле name
+ *
+ * @returns 0 в случае успеха, иначе отрицательный код ошибки.
+ */
 static int fh_resolve_hook_address(struct ftrace_hook *hook)
 {
 	if (strcmp(hook->name, "__x64_sys_clone") == 0)
 	{
-	    hook->address = (unsigned long) 0xffffffffb667ba60;
+	    hook->address = (unsigned long) 0xffffffff97c7ba60;
 	}
 	else
 	{
-	    hook->address = (unsigned long) 0xffffffffb68a8f80;
+	    hook->address = (unsigned long) 0xffffffff97ea8f80;
 	}
 
-	if (!hook->address) {
+	if (!hook->address)
+	{
 		printk(KERN_INFO "unresolved symbol: %s\n", hook->name);
 		return -ENOENT;
 	}
@@ -78,24 +85,42 @@ static int fh_resolve_hook_address(struct ftrace_hook *hook)
 	return 0;
 }
 
+/**
+ *	fh_ftrace_thunk() -- коллбек, который будет вызываться 
+ 						 при трассировании функции
+ * Изменяя регистр %rip — указатель на следующую исполняемую 
+ * инструкцию,— мы изменяем инструкции, которые исполняет процессор 
+ * — то есть можем заставить его выполнить безусловный переход из 
+ * текущей функции в нашу. Таким образом мы перехватываем 
+ * управление на себя.
+ * notrace помогает предотвратить зависание системы в бесконечном цикле
+ */
 static void notrace fh_ftrace_thunk(unsigned long ip, unsigned long parent_ip,
 		struct ftrace_ops *ops, struct pt_regs *regs)
 {
+	// получаем адрес нашей struct ftrace_hook
+	// по адресу внедрённой в неё struct ftrace_ops
 	struct ftrace_hook *hook = container_of(ops, struct ftrace_hook, ops);
 
+	// заменяем значение регистра %rip в структуре 
+	// struct pt_regs на адрес нашего обработчика
 #if USE_FENTRY_OFFSET
 	regs->ip = (unsigned long) hook->function;
 #else
+	// parent_ip содержит адрес возврата в функцию, 
+	// которая вызвала трассируемую функцию
+	// можно воспользоваться им для того, 
+	// чтобы отличить первый вызов перехваченной функции от повторного
 	if (!within_module(parent_ip, THIS_MODULE))
 		regs->ip = (unsigned long) hook->function;
 #endif
 }
 
 /**
- * fh_install_hooks() - register and enable a single hook
- * @hook: a hook to install
+ * fh_install_hook() - регистрация и активация хука
+ * @hook: хук для установки
  *
- * Returns: zero on success, negative error code otherwise.
+ * @returns 0 в случае успеха, иначе отрицательный код ошибки.
  */
 int fh_install_hook(struct ftrace_hook *hook)
 {
@@ -106,25 +131,34 @@ int fh_install_hook(struct ftrace_hook *hook)
 		return err;
 
 	/*
-	 * We're going to modify %rip register so we'll need IPMODIFY flag
-	 * and SAVE_REGS as its prerequisite. ftrace's anti-recursion guard
-	 * is useless if we change %rip so disable it with RECURSION_SAFE.
-	 * We'll perform our own checks for trace function reentry.
+	 * Мы будем модифицировать регистр %rip поэтому необходим флаг IPMODIFY
+	 * и SAVE_REGS. Флаги предписывают ftrace сохранить и восстановить
+	 * регистры процессора, содержимое которых мы сможем изменить в 
+	 * коллбеке. Защита ftrace от рекурсии бесполезна, если 
+	 * изменять %rip, поэтому вычлючаем ее с помощью RECURSION_SAFE.
+	 * Проверки для защиты от рекурсии будут выполнены на входе в
+	 * трассируемую функцию.
 	 */
 	hook->ops.func = fh_ftrace_thunk;
 	hook->ops.flags = FTRACE_OPS_FL_SAVE_REGS
 	                | FTRACE_OPS_FL_RECURSION_SAFE
 	                | FTRACE_OPS_FL_IPMODIFY;
+			
 
+	// включить ftrace для интересующей нас функции
 	err = ftrace_set_filter_ip(&hook->ops, hook->address, 0, 0);
-	if (err) {
+	if (err)
+	{
 		printk(KERN_INFO "ftrace_set_filter_ip() failed: %d\n", err);
 		return err;
 	}
 
+	// разрешить ftrace вызывать наш коллбек
 	err = register_ftrace_function(&hook->ops);
-	if (err) {
+	if (err)
+	{
 		printk(KERN_INFO "register_ftrace_function() failed: %d\n", err);
+		// выключаем ftrace в случае ошибки
 		ftrace_set_filter_ip(&hook->ops, hook->address, 1, 0);
 		return err;
 	}
@@ -133,48 +167,55 @@ int fh_install_hook(struct ftrace_hook *hook)
 }
 
 /**
- * fh_remove_hooks() - disable and unregister a single hook
- * @hook: a hook to remove
+ * fh_remove_hook() - выключить хук
+ * @hook: хук для выключения
  */
 void fh_remove_hook(struct ftrace_hook *hook)
 {
 	int err;
 
+	// отключаем наш коллбек
 	err = unregister_ftrace_function(&hook->ops);
-	if (err) {
+	if (err)
+	{
 		printk(KERN_INFO "unregister_ftrace_function() failed: %d\n", err);
 	}
 
+	// отключаем ftrace
 	err = ftrace_set_filter_ip(&hook->ops, hook->address, 1, 0);
-	if (err) {
+	if (err)
+	{
 		printk(KERN_INFO "ftrace_set_filter_ip() failed: %d\n", err);
 	}
 }
 
 /**
- * fh_install_hooks() - register and enable multiple hooks
- * @hooks: array of hooks to install
- * @count: number of hooks to install
+ * fh_install_hooks() - регистрация хуков
+ * @hooks: массив хуков для регистрации
+ * @count: количество хуков для регистрации
  *
- * If some hooks fail to install then all hooks will be removed.
+ * Если один из хуков не удалось зарегистрировать, 
+ * то все остальные (которые удалось установить), удаляются.
  *
- * Returns: zero on success, negative error code otherwise.
+ * @returns 0 в случае успеха, иначе отрицательный код ошибки.
  */
 int fh_install_hooks(struct ftrace_hook *hooks, size_t count)
 {
-	int err;
+	int err = 0;
 	size_t i;
 
-	for (i = 0; i < count; i++) {
+	for (i = 0; i < count && err == 0; i++)
+	{
 		err = fh_install_hook(&hooks[i]);
-		if (err)
-			goto error;
+		//if (err)
+		//	goto error;
 	}
-
-	return 0;
-
-error:
-	while (i != 0) {
+	if (err == 0)
+	{
+		return 0;
+	}
+	while (i != 0)
+	{
 		fh_remove_hook(&hooks[--i]);
 	}
 
@@ -182,9 +223,9 @@ error:
 }
 
 /**
- * fh_remove_hooks() - disable and unregister multiple hooks
- * @hooks: array of hooks to remove
- * @count: number of hooks to remove
+ * fh_remove_hooks() - выключить хуки
+ * @hooks: массив хуков для выключения
+ * @count: количество хуков для выключения
  */
 void fh_remove_hooks(struct ftrace_hook *hooks, size_t count)
 {
@@ -203,8 +244,9 @@ void fh_remove_hooks(struct ftrace_hook *hooks, size_t count)
 #endif
 
 /*
- * Tail call optimization can interfere with recursion detection based on
- * return address on the stack. Disable it to avoid machine hangups.
+ * Оптимизация хвостового вызова может помешать обнаружению рекурсии
+ * на основе обратного адреса в стеке. 
+ * Отключаем ее, чтобы предотвратить зависание.
  */
 #if !USE_FENTRY_OFFSET
 #pragma GCC optimize("-fno-optimize-sibling-calls")
@@ -217,15 +259,16 @@ static asmlinkage long fh_sys_clone(struct pt_regs *regs)
 {
 	long ret;
 
-	printk(KERN_INFO "clone() before\n");
+	printk(KERN_INFO "clone() PTREGS_SYSCALL_STUBS before\n");
 
 	ret = real_sys_clone(regs);
 
-	printk(KERN_INFO "clone() after: %ld\n", ret);
+	printk(KERN_INFO "clone() PTREGS_SYSCALL_STUBS after: %ld\n", ret);
 
 	return ret;
 }
 #else
+
 static asmlinkage long (*real_sys_clone)(unsigned long clone_flags,
 		unsigned long newsp, int __user *parent_tidptr,
 		int __user *child_tidptr, unsigned long tls);
@@ -255,7 +298,8 @@ static char *duplicate_filename(const char __user *filename)
 	if (!kernel_filename)
 		return NULL;
 
-	if (strncpy_from_user(kernel_filename, filename, 4096) < 0) {
+	if (strncpy_from_user(kernel_filename, filename, 4096) < 0)
+	{
 		kfree(kernel_filename);
 		return NULL;
 	}
@@ -273,21 +317,29 @@ static asmlinkage long fh_sys_execve(struct pt_regs *regs)
 
 	kernel_filename = duplicate_filename((void*) regs->di);
 
-	printk(KERN_INFO "execve() before: %s\n", kernel_filename);
+	printk(KERN_INFO "execve() PTREGS_SYSCALL_STUBS before: %s\n", kernel_filename);
 
 	kfree(kernel_filename);
 
 	ret = real_sys_execve(regs);
 
-	printk(KERN_INFO "execve() after: %ld\n", ret);
+	printk(KERN_INFO "execve() PTREGS_SYSCALL_STUBS after: %ld\n", ret);
 
 	return ret;
 }
 #else
+
+/*
+ * Указатель на оригинальный обработчик системного вызова execve().
+ */
 static asmlinkage long (*real_sys_execve)(const char __user *filename,
 		const char __user *const __user *argv,
 		const char __user *const __user *envp);
 
+/*
+ * Эта функция будет вызываться вместо перехваченной. Её аргументы — это
+ * аргументы оригинальной функции.
+ */
 static asmlinkage long fh_sys_execve(const char __user *filename,
 		const char __user *const __user *argv,
 		const char __user *const __user *envp)
@@ -310,8 +362,7 @@ static asmlinkage long fh_sys_execve(const char __user *filename,
 #endif
 
 /*
- * x86_64 kernels have a special naming convention for syscall entry points in newer kernels.
- * That's what you end up with if an architecture has 3 (three) ABIs for system calls.
+ * ядра x86_64 имеют особое соглашение о названиях входных точек системных вызовов.
  */
 #ifdef PTREGS_SYSCALL_STUBS
 #define SYSCALL_NAME(name) ("__x64_" name)
@@ -326,7 +377,7 @@ static asmlinkage long fh_sys_execve(const char __user *filename,
 		.original = (_original),	\
 	}
 
-static struct ftrace_hook demo_hooks[] = {
+static struct ftrace_hook fs_hooks[] = {
 	HOOK("sys_clone",  fh_sys_clone,  &real_sys_clone),
 	HOOK("sys_execve", fh_sys_execve, &real_sys_execve),
 };
@@ -335,7 +386,7 @@ static int fh_init(void)
 {
 	int err;
 
-	err = fh_install_hooks(demo_hooks, ARRAY_SIZE(demo_hooks));
+	err = fh_install_hooks(fs_hooks, ARRAY_SIZE(fs_hooks));
 	if (err)
 		return err;
 
@@ -347,7 +398,7 @@ module_init(fh_init);
 
 static void fh_exit(void)
 {
-	fh_remove_hooks(demo_hooks, ARRAY_SIZE(demo_hooks));
+	fh_remove_hooks(fs_hooks, ARRAY_SIZE(fs_hooks));
 
 	printk(KERN_INFO "module unloaded\n");
 }
