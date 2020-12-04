@@ -1,9 +1,3 @@
-/*
- * Hooking kernel functions using ftrace framework
- *
- * Copyright (c) 2018 ilammy
- */
-
 #define pr_fmt(fmt) "ftrace_hook: " fmt
 
 #include <linux/ftrace.h>
@@ -15,10 +9,13 @@
 #include <linux/uaccess.h>
 #include <linux/version.h>
 #include <linux/fs.h>
+#include <linux/fs_struct.h>
+#include <linux/timekeeping.h>
 
 MODULE_DESCRIPTION("Example module hooking clone() and execve() via ftrace");
 MODULE_AUTHOR("ilammy <a.lozovsky@gmail.com>");
 MODULE_LICENSE("GPL");
+
 
 /*
  * There are two ways of preventing vicious recursive loops when hooking:
@@ -52,6 +49,41 @@ struct ftrace_hook {
 	struct ftrace_ops ops;
 };
 
+#define LOG_FILE "/var/log/fsmonitor.log"
+#define CONFIG_PATH "/etc/fsmonitor.conf"
+#define BUFF_SIZE 1024//PATH_MAX
+#define MONITOR_ALL_MARKER "ALL"
+
+short Monitor_All = 0;
+struct file* f;
+
+int write_log(const char* file, const char* what)
+{
+	time64_t cur_seconds;
+	unsigned long local_time;
+	char new_sl[BUFF_SIZE];
+
+	if (IS_ERR(f))
+	{
+		pr_info("Failed to write log");
+		return -1;
+	}
+
+	cur_seconds = ktime_get_real_seconds(); 
+	local_time = (u32)(cur_seconds - (sys_tz.tz_minuteswest * 60));
+
+	sprintf(new_sl, "%.2lu:%.2lu:%.6lu \t %s \t %s \n",
+                    (local_time / 3600) % (24),
+                    (local_time / 60) % (60),
+                    local_time % 60,
+				    file, what);
+		
+	kernel_write(f, new_sl, strlen(new_sl), &f->f_pos);
+
+	pr_info("Successfully write log");
+	return 0;
+}
+
 /**
  * fh_resolve_hook_address() - поиск адреса функции, 
  * 							   которую будем перехватывать
@@ -61,14 +93,15 @@ struct ftrace_hook {
  */
 static int fh_resolve_hook_address(struct ftrace_hook *hook)
 {
-	if (strcmp(hook->name, "__x64_sys_clone") == 0)
+	if (strcmp(hook->name, "__x64_sys_mkdir") == 0)
 	{
-	    hook->address = (unsigned long) 0xffffffff97c7ba60;
+	    hook->address = (unsigned long) 0xffffffffaf6b2680;
 	}
 	else
 	{
-	    hook->address = (unsigned long) 0xffffffff97ea8f80;
+	    hook->address = 0;
 	}
+	//hook->address = (unsigned long) 0xffffffff93aa8f80;
 
 	if (!hook->address)
 	{
@@ -252,110 +285,74 @@ void fh_remove_hooks(struct ftrace_hook *hooks, size_t count)
 #pragma GCC optimize("-fno-optimize-sibling-calls")
 #endif
 
-#ifdef PTREGS_SYSCALL_STUBS
-static asmlinkage long (*real_sys_clone)(struct pt_regs *regs);
-
-static asmlinkage long fh_sys_clone(struct pt_regs *regs)
-{
-	long ret;
-
-	printk(KERN_INFO "clone() PTREGS_SYSCALL_STUBS before\n");
-
-	ret = real_sys_clone(regs);
-
-	printk(KERN_INFO "clone() PTREGS_SYSCALL_STUBS after: %ld\n", ret);
-
-	return ret;
-}
-#else
-
-static asmlinkage long (*real_sys_clone)(unsigned long clone_flags,
-		unsigned long newsp, int __user *parent_tidptr,
-		int __user *child_tidptr, unsigned long tls);
-
-static asmlinkage long fh_sys_clone(unsigned long clone_flags,
-		unsigned long newsp, int __user *parent_tidptr,
-		int __user *child_tidptr, unsigned long tls)
-{
-	long ret;
-
-	printk(KERN_INFO "clone() before\n");
-
-	ret = real_sys_clone(clone_flags, newsp, parent_tidptr,
-		child_tidptr, tls);
-
-	printk(KERN_INFO "clone() after: %ld\n", ret);
-
-	return ret;
-}
-#endif
 
 static char *duplicate_filename(const char __user *filename)
 {
 	char *kernel_filename;
+	int res;
 
 	kernel_filename = kmalloc(4096, GFP_KERNEL);
 	if (!kernel_filename)
 		return NULL;
 
-	if (strncpy_from_user(kernel_filename, filename, 4096) < 0)
+	if ((res = strncpy_from_user(kernel_filename, filename, 4096)) < 0)
 	{
+		printk(KERN_INFO "FH copy_from_user() returned %d \n", res);
+		printk(KERN_INFO "FH copy_from_user() failed\n");
 		kfree(kernel_filename);
 		return NULL;
 	}
+
+	printk(KERN_INFO "FH copy_from_user() returned %d \n", res);
 
 	return kernel_filename;
 }
 
 #ifdef PTREGS_SYSCALL_STUBS
-static asmlinkage long (*real_sys_execve)(struct pt_regs *regs);
+static asmlinkage long (*real_sys_mkdir)(struct pt_regs *regs);
 
-static asmlinkage long fh_sys_execve(struct pt_regs *regs)
+static asmlinkage long fh_sys_mkdir(struct pt_regs *regs)
 {
 	long ret;
 	char *kernel_filename;
+	char buffer[BUFF_SIZE];
+	char *path;
 
 	kernel_filename = duplicate_filename((void*) regs->di);
+	write_log("FILENAME", "mkdir");
 
-	printk(KERN_INFO "execve() PTREGS_SYSCALL_STUBS before: %s\n", kernel_filename);
+	pr_info("register mkdir() before: %s\n", kernel_filename);
+	
+	//smth = duplicate_filename((void*) regs->si);
+	path = dentry_path_raw(current->fs->pwd.dentry, buffer, 4095);
+	pr_info("register mkdir() before proc pwd: %s\n", path);
+	//pr_info("register mkdir() before proc pwd: %s\n", current->fs->pwd.dentry->d_iname);
 
 	kfree(kernel_filename);
 
-	ret = real_sys_execve(regs);
+	ret = real_sys_mkdir(regs);
 
-	printk(KERN_INFO "execve() PTREGS_SYSCALL_STUBS after: %ld\n", ret);
+	pr_info("register new mkdir() after: %ld\n", ret);
 
 	return ret;
 }
 #else
+static asmlinkage long (*real_sys_mkdir)(const char __user *pathname, umode_t mode);
 
-/*
- * Указатель на оригинальный обработчик системного вызова execve().
- */
-static asmlinkage long (*real_sys_execve)(const char __user *filename,
-		const char __user *const __user *argv,
-		const char __user *const __user *envp);
-
-/*
- * Эта функция будет вызываться вместо перехваченной. Её аргументы — это
- * аргументы оригинальной функции.
- */
-static asmlinkage long fh_sys_execve(const char __user *filename,
-		const char __user *const __user *argv,
-		const char __user *const __user *envp)
+static asmlinkage long fh_sys_mkdir(const char __user *pathname, umode_t mode)
 {
 	long ret;
 	char *kernel_filename;
 
-	kernel_filename = duplicate_filename(filename);
+	kernel_filename = duplicate_filename(pathname);
 
-	printk(KERN_INFO "execve() before: %s\n", kernel_filename);
+	pr_info("mkdir() before: %s, %c, mode: %lu\n", kernel_filename, pathname[0], mode);
 
 	kfree(kernel_filename);
 
-	ret = real_sys_execve(filename, argv, envp);
+	ret = real_sys_mkdir(pathname, mode);
 
-	printk(KERN_INFO "execve() after: %ld\n", ret);
+	pr_info("mkdir() after: %ld\n", ret);
 
 	return ret;
 }
@@ -378,19 +375,98 @@ static asmlinkage long fh_sys_execve(const char __user *filename,
 	}
 
 static struct ftrace_hook fs_hooks[] = {
-	HOOK("sys_clone",  fh_sys_clone,  &real_sys_clone),
-	HOOK("sys_execve", fh_sys_execve, &real_sys_execve),
+	HOOK("sys_mkdir", fh_sys_mkdir,  &real_sys_mkdir),
+	//HOOK("sys_execve",  fh_sys_execve,  &real_sys_execve),
 };
+
+void my_str_replace(char* str, size_t len, char what, char with)
+{
+	size_t i;
+	for (i = 0; i < len; ++i)
+	{
+		if (str[i] == what)
+		{
+			str[i] = with;
+		}
+	}
+}
+
+int process_filename(const char* filename)
+{
+	return 0;
+	if (strcmp(filename, MONITOR_ALL_MARKER) == 0)
+	{
+		Monitor_All = 1;
+		return 0;
+	}
+	else
+	{
+		if (filename[0] != '/' || filename[0] != '~')
+		{
+		}
+	}
+	return 0;
+}
+
+int read_config(void)
+{
+	struct file* file;
+	int res = 1;
+	loff_t offset = 0;
+	loff_t inner_offset = 0;
+	int return_val = 0;
+
+	file = filp_open(CONFIG_PATH, O_RDONLY, 0);
+	if (IS_ERR(f))
+	{
+		return -1;
+	}
+
+	pr_info("Reading config from %s\n", CONFIG_PATH);
+
+	while (res > 0)
+	{
+		char* data_buff = kmalloc(BUFF_SIZE, GFP_KERNEL);
+		offset = inner_offset;
+		res = kernel_read(file, data_buff, BUFF_SIZE, &offset);
+		if (res > 0 && return_val == 0)
+		{
+			my_str_replace(data_buff, res, '\n', '\0');
+			pr_info("read %s\n", data_buff);
+			inner_offset += strlen(data_buff) + 1;
+			return_val = process_filename(data_buff);
+			if (return_val != 0)
+			{
+				kfree((void*) data_buff);
+			}
+		}
+	}
+	filp_close(file, NULL);
+	return return_val;
+}
 
 static int fh_init(void)
 {
 	int err;
+	f = filp_open(LOG_FILE, O_APPEND | O_CREAT | O_WRONLY, 0);
+	if (IS_ERR(f))
+	{
+		pr_info("Unable to open log file\n");
+		return -1;
+	}
+
+	if ((err = read_config()) != 0)
+	{
+		pr_info("Unable to read config file\n");
+		return err;
+	}
 
 	err = fh_install_hooks(fs_hooks, ARRAY_SIZE(fs_hooks));
 	if (err)
 		return err;
 
-	printk(KERN_INFO "module loaded\n");
+
+	printk(KERN_INFO "FH module loaded\n");
 
 	return 0;
 }
@@ -398,8 +474,9 @@ module_init(fh_init);
 
 static void fh_exit(void)
 {
+	filp_close(f, NULL);
 	fh_remove_hooks(fs_hooks, ARRAY_SIZE(fs_hooks));
 
-	printk(KERN_INFO "module unloaded\n");
+	printk(KERN_INFO "FH module unloaded\n");
 }
 module_exit(fh_exit);

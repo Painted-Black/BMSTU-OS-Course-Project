@@ -1,1 +1,1 @@
-sudo rmmod filesys_tracer
+sudo rmmod mytracer
