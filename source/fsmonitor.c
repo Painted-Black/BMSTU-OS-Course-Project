@@ -11,11 +11,12 @@
 #include <linux/fs.h>
 #include <linux/fs_struct.h>
 #include <linux/timekeeping.h>
+#include <linux/stat.h>
+#include <linux/types.h>
 
 MODULE_DESCRIPTION("Example module hooking clone() and execve() via ftrace");
 MODULE_AUTHOR("ilammy <a.lozovsky@gmail.com>");
 MODULE_LICENSE("GPL");
-
 
 /*
  * There are two ways of preventing vicious recursive loops when hooking:
@@ -40,7 +41,8 @@ MODULE_LICENSE("GPL");
  * @ops:        служебная информация ftrace, инициализируется нулями,
  *              при установке перехвата будет доинициализирована
  */
-struct ftrace_hook {
+struct ftrace_hook
+{
 	const char *name;
 	void *function;
 	void *original;
@@ -51,17 +53,108 @@ struct ftrace_hook {
 
 #define LOG_FILE "/var/log/fsmonitor.log"
 #define CONFIG_PATH "/etc/fsmonitor.conf"
-#define BUFF_SIZE 1024//PATH_MAX
+#define BUFF_SIZE 1024 //PATH_MAX
 #define MONITOR_ALL_MARKER "ALL"
 
-short Monitor_All = 0;
-struct file* f;
+struct list_node
+{
+	struct list_node *next_node;
+	void *value;
+	size_t type_size;
+};
 
-int write_log(const char* file, const char* what)
+struct list
+{
+	struct list_node *head;
+	struct list_node *tail;
+};
+
+short Monitor_All = 0;
+struct file *f;
+struct list monitor_files, monitor_dirs;
+
+void init(struct list *lst)
+{
+	lst->head = NULL;
+	lst->tail = NULL;
+}
+
+struct list_node *push(struct list *node, void *value, size_t size)
+{
+	//pr_info("PUSH %s\n", *(char **)value);
+	void *next_node = kmalloc(sizeof(struct list_node) + size, GFP_KERNEL);
+	struct list_node *__next_node = next_node;
+	__next_node->value = next_node + sizeof(struct list_node);
+	__next_node->type_size = size;
+	__next_node->next_node = NULL;
+	memcpy(__next_node->value, value, size);
+
+	if (node->head == NULL)
+	{
+		node->head = __next_node;
+		node->tail = __next_node;
+	}
+	else
+	{
+		node->tail->next_node = __next_node;
+		node->tail = __next_node;
+	}
+
+	return next_node;
+}
+
+struct list_node *pop(struct list *node)
+{
+	struct list_node *value = node->head == NULL
+								  ? NULL
+								  : node->head->next_node;
+
+	if (value != NULL)
+	{
+		kfree(node->head);
+		node->head = value;
+	}
+	return value;
+}
+
+void free_list(struct list *list)
+{
+	if (list->head != NULL)
+	{
+		do
+		{
+			//pr_info("Deleting %s\n", *(char **)list->head->value);
+			kfree(*(char **)list->head->value);
+		} while (pop(list) != NULL);
+	}
+}
+
+char* cut_last_filename(char* filename)
+{
+	size_t n;
+	int i = 0, go = 1;
+	n = strlen(filename);
+	for (i = n - 1; i >= 0 && go == 1; --i)
+	{
+		if (filename[i] == '/')
+		{
+			go = 0;
+		}
+		filename[i] = '\0';
+	}
+}
+
+int write_log(const char *log)
 {
 	time64_t cur_seconds;
 	unsigned long local_time;
 	char new_sl[BUFF_SIZE];
+
+	if (log == NULL)
+	{
+		pr_info("Empty log message.\n");
+		return -1;
+	}
 
 	if (IS_ERR(f))
 	{
@@ -69,19 +162,55 @@ int write_log(const char* file, const char* what)
 		return -1;
 	}
 
-	cur_seconds = ktime_get_real_seconds(); 
+	cur_seconds = ktime_get_real_seconds();
 	local_time = (u32)(cur_seconds - (sys_tz.tz_minuteswest * 60));
 
-	sprintf(new_sl, "%.2lu:%.2lu:%.6lu \t %s \t %s \n",
-                    (local_time / 3600) % (24),
-                    (local_time / 60) % (60),
-                    local_time % 60,
-				    file, what);
-		
+	snprintf(new_sl, BUFF_SIZE, "%.2lu:%.2lu:%.6lu \t ",
+			(local_time / 3600) % (24),
+			(local_time / 60) % (60),
+			local_time % 60);
+
 	kernel_write(f, new_sl, strlen(new_sl), &f->f_pos);
 
-	pr_info("Successfully write log");
+	kernel_write(f, log, strlen(log), &f->f_pos);
+
+	//pr_info("Successfully writef log");
 	return 0;
+}
+
+int list_find(struct list* list, const char* name)
+{
+	struct list_node* _node = list->head;
+	int ret = 1;
+	while (_node != NULL && ret == -1)
+	{
+		if (strcmp(name, *(char**) _node->value) == 0)
+		{
+			ret = 0;
+		}
+		_node = _node->next_node;
+	}
+	return !ret;
+}
+
+int check_filename(const char* filename, int search_file, int search_dir)
+{
+	int ret = 1;
+	pr_info("Checking %s\n", filename);
+	
+	if (search_file)
+	{
+		ret &= list_find(&monitor_files, filename);
+	}
+	if (search_dir)
+	{
+		ret &= list_find(&monitor_dirs, filename);
+	}
+	if (ret == 0)
+	{
+		pr_info("File not found\n");
+	}
+	return !ret;
 }
 
 /**
@@ -95,11 +224,11 @@ static int fh_resolve_hook_address(struct ftrace_hook *hook)
 {
 	if (strcmp(hook->name, "__x64_sys_mkdir") == 0)
 	{
-	    hook->address = (unsigned long) 0xffffffffaf6b2680;
+		hook->address = (unsigned long) 0xffffffffbdab2680;
 	}
 	else
 	{
-	    hook->address = 0;
+		hook->address = 0;
 	}
 	//hook->address = (unsigned long) 0xffffffff93aa8f80;
 
@@ -110,9 +239,9 @@ static int fh_resolve_hook_address(struct ftrace_hook *hook)
 	}
 
 #if USE_FENTRY_OFFSET
-	*((unsigned long*) hook->original) = hook->address + MCOUNT_INSN_SIZE;
+	*((unsigned long *)hook->original) = hook->address + MCOUNT_INSN_SIZE;
 #else
-	*((unsigned long*) hook->original) = hook->address;
+	*((unsigned long *)hook->original) = hook->address;
 #endif
 
 	return 0;
@@ -129,23 +258,23 @@ static int fh_resolve_hook_address(struct ftrace_hook *hook)
  * notrace помогает предотвратить зависание системы в бесконечном цикле
  */
 static void notrace fh_ftrace_thunk(unsigned long ip, unsigned long parent_ip,
-		struct ftrace_ops *ops, struct pt_regs *regs)
+									struct ftrace_ops *ops, struct pt_regs *regs)
 {
 	// получаем адрес нашей struct ftrace_hook
 	// по адресу внедрённой в неё struct ftrace_ops
 	struct ftrace_hook *hook = container_of(ops, struct ftrace_hook, ops);
 
-	// заменяем значение регистра %rip в структуре 
+	// заменяем значение регистра %rip в структуре
 	// struct pt_regs на адрес нашего обработчика
 #if USE_FENTRY_OFFSET
-	regs->ip = (unsigned long) hook->function;
+	regs->ip = (unsigned long)hook->function;
 #else
-	// parent_ip содержит адрес возврата в функцию, 
+	// parent_ip содержит адрес возврата в функцию,
 	// которая вызвала трассируемую функцию
-	// можно воспользоваться им для того, 
+	// можно воспользоваться им для того,
 	// чтобы отличить первый вызов перехваченной функции от повторного
 	if (!within_module(parent_ip, THIS_MODULE))
-		regs->ip = (unsigned long) hook->function;
+		regs->ip = (unsigned long)hook->function;
 #endif
 }
 
@@ -173,10 +302,7 @@ int fh_install_hook(struct ftrace_hook *hook)
 	 * трассируемую функцию.
 	 */
 	hook->ops.func = fh_ftrace_thunk;
-	hook->ops.flags = FTRACE_OPS_FL_SAVE_REGS
-	                | FTRACE_OPS_FL_RECURSION_SAFE
-	                | FTRACE_OPS_FL_IPMODIFY;
-			
+	hook->ops.flags = FTRACE_OPS_FL_SAVE_REGS | FTRACE_OPS_FL_RECURSION_SAFE | FTRACE_OPS_FL_IPMODIFY;
 
 	// включить ftrace для интересующей нас функции
 	err = ftrace_set_filter_ip(&hook->ops, hook->address, 0, 0);
@@ -272,7 +398,7 @@ void fh_remove_hooks(struct ftrace_hook *hooks, size_t count)
 #error Currently only x86_64 architecture is supported
 #endif
 
-#if defined(CONFIG_X86_64) && (LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0))
+#if defined(CONFIG_X86_64) && (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 17, 0))
 #define PTREGS_SYSCALL_STUBS 1
 #endif
 
@@ -285,17 +411,16 @@ void fh_remove_hooks(struct ftrace_hook *hooks, size_t count)
 #pragma GCC optimize("-fno-optimize-sibling-calls")
 #endif
 
-
 static char *duplicate_filename(const char __user *filename)
 {
 	char *kernel_filename;
 	int res;
 
-	kernel_filename = kmalloc(4096, GFP_KERNEL);
+	kernel_filename = kmalloc(BUFF_SIZE, GFP_KERNEL);
 	if (!kernel_filename)
 		return NULL;
 
-	if ((res = strncpy_from_user(kernel_filename, filename, 4096)) < 0)
+	if ((res = strncpy_from_user(kernel_filename, filename, BUFF_SIZE)) < 0)
 	{
 		printk(KERN_INFO "FH copy_from_user() returned %d \n", res);
 		printk(KERN_INFO "FH copy_from_user() failed\n");
@@ -317,22 +442,53 @@ static asmlinkage long fh_sys_mkdir(struct pt_regs *regs)
 	char *kernel_filename;
 	char buffer[BUFF_SIZE];
 	char *path;
-
-	kernel_filename = duplicate_filename((void*) regs->di);
-	write_log("FILENAME", "mkdir");
-
-	pr_info("register mkdir() before: %s\n", kernel_filename);
-	
-	//smth = duplicate_filename((void*) regs->si);
-	path = dentry_path_raw(current->fs->pwd.dentry, buffer, 4095);
-	pr_info("register mkdir() before proc pwd: %s\n", path);
-	//pr_info("register mkdir() before proc pwd: %s\n", current->fs->pwd.dentry->d_iname);
-
-	kfree(kernel_filename);
+	char* full_filename;
 
 	ret = real_sys_mkdir(regs);
 
-	pr_info("register new mkdir() after: %ld\n", ret);
+	kernel_filename = duplicate_filename((void *)regs->di);
+
+	path = dentry_path_raw(current->fs->pwd.dentry, buffer, BUFF_SIZE);
+	//path = dentry_path_raw(current->fs->pwd.dentry, buffer, BUFF_SIZE);
+	//pr_info("mkdir(): checking filename %s, pwd: %s\n", kernel_filename, path);
+	//pr_info("register mkdir() before proc pwd: %s\n", current->fs->pwd.dentry->d_iname);
+	//pr_info("register new mkdir() after: %ld\n", ret);
+	full_filename = kmalloc(BUFF_SIZE * 2, GFP_KERNEL);
+	if (full_filename == NULL)
+	{
+		pr_info("kmallok() failed -- no trace");
+		return ret;
+	}
+
+	pr_info("%s -- %s\n", path, kernel_filename);
+	if (kernel_filename[0] != '/')
+	{
+		pr_info("Fixing...\n");
+		//full_filename = strcat(path, "/");
+		full_filename = strcat(full_filename, path);
+		full_filename = strcat(full_filename, "/");
+		full_filename = strcat(full_filename, kernel_filename);
+		pr_info("Full filename: %s\n", full_filename);
+	}
+	else
+	{
+		full_filename = strcpy(full_filename, kernel_filename);
+		pr_info("Else full filename: %s\n", full_filename);
+	}
+	//pr_info("Fill filename: %s\n", full_filename);
+	kfree(kernel_filename);
+	return ret;
+	if (check_filename(path, 0, 1) == 0)
+	{
+		char buff[BUFF_SIZE * 2];
+		pr_info("OK");
+		snprintf(buff, BUFF_SIZE * 2, "Process %d MKDIR '%s' at '%s'. Syscall returned %ld\n",	current->pid, kernel_filename, path, ret);
+		pr_info("%s", buff);
+		//write_log(kernel_filename);
+	}
+
+
+	//kfree(kernel_filename);
 
 	return ret;
 }
@@ -367,19 +523,19 @@ static asmlinkage long fh_sys_mkdir(const char __user *pathname, umode_t mode)
 #define SYSCALL_NAME(name) (name)
 #endif
 
-#define HOOK(_name, _function, _original)	\
-	{					\
-		.name = SYSCALL_NAME(_name),	\
-		.function = (_function),	\
-		.original = (_original),	\
+#define HOOK(_name, _function, _original) \
+	{                                     \
+		.name = SYSCALL_NAME(_name),      \
+		.function = (_function),          \
+		.original = (_original),          \
 	}
 
 static struct ftrace_hook fs_hooks[] = {
-	HOOK("sys_mkdir", fh_sys_mkdir,  &real_sys_mkdir),
+	HOOK("sys_mkdir", fh_sys_mkdir, &real_sys_mkdir),
 	//HOOK("sys_execve",  fh_sys_execve,  &real_sys_execve),
 };
 
-void my_str_replace(char* str, size_t len, char what, char with)
+void my_str_replace(char *str, size_t len, char what, char with)
 {
 	size_t i;
 	for (i = 0; i < len; ++i)
@@ -391,26 +547,70 @@ void my_str_replace(char* str, size_t len, char what, char with)
 	}
 }
 
-int process_filename(const char* filename)
+/**
+ * Проверяет, является ли указанный путь абсолютным и до существующего файла.
+ * @returns -2 -- путь некорректный в принципе,
+ * 			-3 -- путь до несуществующего файла,
+ * 			0 -- файл существует и является директорией,
+ * 			1 -- файл существует и не является директорией,
+ * 			2 -- передана пустая строка
+ */ 
+int is_valid(const char *filename)
 {
-	return 0;
-	if (strcmp(filename, MONITOR_ALL_MARKER) == 0)
+	struct file* _f;
+
+	if (strlen(filename) == 0)
 	{
-		Monitor_All = 1;
-		return 0;
+		return 2;
+	}
+	if (filename[0] != '/')
+	{
+		//pr_info("Filename first char %c\n", filename[0]);
+		return -2;
+	}
+
+	_f = filp_open(filename, 0, 0);
+	if (IS_ERR(_f))
+	{
+		pr_info("Unable to open file\n");
+		return -3;
 	}
 	else
 	{
-		if (filename[0] != '/' || filename[0] != '~')
-		{
-		}
+		//pr_info("File opened\n");
+		//pr_info("Is dir %d\n", S_ISDIR(f->f_inode->i_mode));
+		int is_dir = S_ISDIR(f->f_inode->i_mode);
+		filp_close(f, NULL);
+		return is_dir;
 	}
-	return 0;
+}
+
+/**
+ * Проверяет имя файла
+ * @returns -2 -- путь некорректный в принципе,
+ * 			-3 -- путь до несуществующего файла,
+ * 			0 -- файл существует и является директорией,
+ * 			1 -- файл существует и не является директорией,
+ * 			2 -- передана пустая строка,
+ * 			3 -- указаное имя файла == MONITOR_ALL_MARKER
+ */ 
+int process_filename(const char *filename)
+{
+	if (strcmp(filename, MONITOR_ALL_MARKER) == 0)
+	{
+		Monitor_All = 1;
+		return 3;
+	}
+	if (strlen(filename) == 0)
+	{
+		return 2;
+	}
+	return is_valid(filename);
 }
 
 int read_config(void)
 {
-	struct file* file;
+	struct file *file;
 	int res = 1;
 	loff_t offset = 0;
 	loff_t inner_offset = 0;
@@ -424,20 +624,51 @@ int read_config(void)
 
 	pr_info("Reading config from %s\n", CONFIG_PATH);
 
-	while (res > 0)
+	while (res > 0 && return_val == 0)
 	{
-		char* data_buff = kmalloc(BUFF_SIZE, GFP_KERNEL);
-		offset = inner_offset;
-		res = kernel_read(file, data_buff, BUFF_SIZE, &offset);
-		if (res > 0 && return_val == 0)
+		char *data_buff = kmalloc(BUFF_SIZE, GFP_KERNEL);
+		if (IS_ERR(data_buff))
 		{
-			my_str_replace(data_buff, res, '\n', '\0');
-			pr_info("read %s\n", data_buff);
-			inner_offset += strlen(data_buff) + 1;
-			return_val = process_filename(data_buff);
-			if (return_val != 0)
+			pr_info("Unable to allocate memory\n");
+			return_val = -1;
+		}
+		else
+		{
+			offset = inner_offset;
+			res = kernel_read(file, data_buff, BUFF_SIZE, &offset);
+			if (res > 0)
 			{
-				kfree((void*) data_buff);
+				my_str_replace(data_buff, res, '\n', '\0');
+				//pr_info("read %s\n", data_buff);
+				inner_offset += strlen(data_buff) + 1;
+				return_val = process_filename(data_buff);
+				//pr_info("processing file returned %d\n", return_val);
+								/*-2 -- путь некорректный в принципе,
+ 					* 			-3 -- путь до несуществующего файла,
+ 					* 			0 -- файл существует и является директорией,
+ 					* 			1 -- файл существует и не является директорией,
+ 					* 			2 -- передана пустая строка,
+ 					* 			3 -- указаное имя файла == MONITOR_ALL_MARKER*/
+				
+				if (return_val == 3) // считали маркер, будем следить за всеми файлами
+				{
+					kfree((void *)data_buff);
+				}
+				else if (return_val == 2) // считали пустую строку, читаем дальше
+				{
+					kfree((void *)data_buff);
+					return_val = 0;
+				}
+				else if (return_val == 0) // файл существует и не является директорией, следим за ним, читаем дальше
+				{
+					push(&monitor_files, &data_buff, sizeof(char *));
+					return_val = 0;
+				}
+				else if (return_val == 1) // файл существует и является директорией, следим за ним, читаем дальше
+				{
+					push(&monitor_dirs, &data_buff, sizeof(char *));
+					return_val = 0;
+				}
 			}
 		}
 	}
@@ -447,7 +678,17 @@ int read_config(void)
 
 static int fh_init(void)
 {
+	//struct file* ff;
+	//const char* n = "/home/lander/Source/C++/git/BMSTU-OS-Course-Project/source/";
+	//ff = filp_open(m, 0, 0);
+	//if (IS_ERR(ff))
+	//{
+	//	pr_info("Unable to open file '%s'\n", n);
+	//	return -1;
+	//}
+	//return -1;
 	int err;
+	pr_info("============");
 	f = filp_open(LOG_FILE, O_APPEND | O_CREAT | O_WRONLY, 0);
 	if (IS_ERR(f))
 	{
@@ -455,18 +696,28 @@ static int fh_init(void)
 		return -1;
 	}
 
+	init(&monitor_dirs);
+	init(&monitor_files);
 	if ((err = read_config()) != 0)
 	{
-		pr_info("Unable to read config file\n");
+		if (err == -1)
+			pr_info("Unable to read config file\n");
+		if (err == -2)
+			pr_info("Invalid config file format\n");
+		if (err == -3)
+			pr_info("Files writen in config does not exist\n");
 		return err;
 	}
 
 	err = fh_install_hooks(fs_hooks, ARRAY_SIZE(fs_hooks));
 	if (err)
+	{
+		free_list(&monitor_dirs);
+		free_list(&monitor_files);
 		return err;
+	}
 
-
-	printk(KERN_INFO "FH module loaded\n");
+	pr_info("FH module loaded\n");
 
 	return 0;
 }
@@ -475,8 +726,12 @@ module_init(fh_init);
 static void fh_exit(void)
 {
 	filp_close(f, NULL);
+	pr_info("Log file closed\n");
 	fh_remove_hooks(fs_hooks, ARRAY_SIZE(fs_hooks));
-
-	printk(KERN_INFO "FH module unloaded\n");
+	pr_info("Hooks removed\n");
+	free_list(&monitor_dirs);
+	free_list(&monitor_files);
+	pr_info("Lisis cleared\n");
+	pr_info("Module unloaded\n");
 }
 module_exit(fh_exit);
