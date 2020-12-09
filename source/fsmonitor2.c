@@ -17,8 +17,8 @@
 #include <asm/segment.h>
 #include <linux/buffer_head.h>
 
-MODULE_DESCRIPTION("Example module hooking clone() and execve() via ftrace");
-MODULE_AUTHOR("ilammy <a.lozovsky@gmail.com>");
+MODULE_DESCRIPTION("File system monitor");
+MODULE_AUTHOR("Ovchinnikova Anastasia");
 MODULE_LICENSE("GPL");
 
 /*
@@ -152,7 +152,17 @@ int write_log(const char *log)
 {
 	time64_t cur_seconds;
 	unsigned long local_time;
-	char new_sl[BUFF_SIZE], msg[BUFF_SIZE];
+	char *new_sl;
+	loff_t pos;
+	int ret;
+
+	new_sl = kmalloc(BUFF_SIZE, GFP_KERNEL);
+	//msg = kmalloc(BUFF_SIZE, GFP_KERNEL);
+	if (new_sl == NULL)
+	{
+		pr_info("Unable to allocate memory\n");
+		return -1;
+	}
 
 	if (log == NULL)
 	{
@@ -168,8 +178,6 @@ int write_log(const char *log)
 
 	cur_seconds = ktime_get_real_seconds();
 	local_time = (u32)(cur_seconds - (sys_tz.tz_minuteswest * 60));
-	snprintf(msg, BUFF_SIZE, "%s", log);
-	pr_info("MSG %s\n", msg);
 
 	snprintf(new_sl, BUFF_SIZE, "%.2lu:%.2lu:%.6lu \t %s\n",
 			(local_time / 3600) % (24),
@@ -178,18 +186,12 @@ int write_log(const char *log)
 			log);
 	pr_info("SNPFINTF DONE %s", new_sl);
 
-	loff_t pos = 0;
-	f->f_pos = pos;
-	pr_info("FILE %p FPOS %ld\n", f, pos);
+	pos = f->f_pos;
+	pr_info("FILE %p FPOS %lld\n", f, pos);
 
-	int ret = kernel_write(f, new_sl, strlen(new_sl), &pos);
+	ret = kernel_write(f, new_sl, strlen(new_sl), &pos);
 	pr_info("WRITE RET %d\n", ret);
-	//char* cpy = kmalloc(BUFF_SIZE, BUFF_SIZE);
-	//cpy = strcpy(cpy, log);
-
-
-	//kernel_write(f, new_sl, strlen(new_sl), &f->f_pos);
-	//kfree(cpy);
+	kfree(new_sl);
 
 	pr_info("Successfully write log");
 	return 0;
@@ -416,7 +418,9 @@ void fh_remove_hooks(struct ftrace_hook *hooks, size_t count)
 #error Currently only x86_64 architecture is supported
 #endif
 
-#if defined(CONFIG_X86_64) && (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 17, 0))
+#if defined (CONFIG_X86_64) && \
+			(LINUX_VERSION_CODE >= KERNEL_VERSION(4, 17, 0)) && \
+			(LINUX_VERSION_CODE <= KERNEL_VERSION(5, 6, 0))
 #define PTREGS_SYSCALL_STUBS 1
 #endif
 
@@ -451,7 +455,6 @@ static char *duplicate_filename(const char __user *filename)
 	return kernel_filename;
 }
 
-#ifdef PTREGS_SYSCALL_STUBS
 static asmlinkage long (*real_sys_mkdir)(struct pt_regs *regs);
 
 static asmlinkage long fh_sys_mkdir(struct pt_regs *regs)
@@ -461,21 +464,24 @@ static asmlinkage long fh_sys_mkdir(struct pt_regs *regs)
 	char* full_filename;
 	char *path;
     struct path pwd;
-	char pwd_buff[BUFF_SIZE]; 
+	char* pwd_buff; 
 
 	ret = real_sys_mkdir(regs);
 
 	kernel_filename = duplicate_filename((void *)regs->di);
+	pwd_buff = kmalloc(BUFF_SIZE, GFP_KERNEL);
+	if (pwd_buff == NULL)
+	{
+		pr_info("Unable to allocate memory\n");
+		return ret;
+	}
 
  	pwd = current->fs->pwd;
  	path_get(&pwd);
  	path = d_path(&pwd, pwd_buff, BUFF_SIZE);
 
 	//path = dentry_path_raw(current->fs->pwd.dentry, buffer, BUFF_SIZE);
-	//path = dentry_path_raw(current->fs->pwd.dentry, buffer, BUFF_SIZE);
-	//pr_info("mkdir(): checking filename %s, pwd: %s\n", kernel_filename, path);
-	//pr_info("register mkdir() before proc pwd: %s\n", current->fs->pwd.dentry->d_iname);
-	//pr_info("register new mkdir() after: %ld\n", ret);
+
 	full_filename = kmalloc(BUFF_SIZE * 2, GFP_KERNEL);
 	if (full_filename == NULL)
 	{
@@ -508,8 +514,9 @@ static asmlinkage long fh_sys_mkdir(struct pt_regs *regs)
 			pr_info("Unable to allocate memory\n");
 			return ret;
 		}
-		snprintf(buff, BUFF_SIZE * 2, "Process %d MKDIR '%s'. Syscall returned %ld\0\n",	current->pid, full_filename, ret);
+		snprintf(buff, BUFF_SIZE * 2, "Process %d MKDIR '%s'. Syscall returned %ld\n",	current->pid, full_filename, ret);
 		pr_info("%s", buff);
+		write_log(buff);
 		kfree(buff);
 	}
 
@@ -519,27 +526,6 @@ static asmlinkage long fh_sys_mkdir(struct pt_regs *regs)
 
 	return ret;
 }
-#else
-static asmlinkage long (*real_sys_mkdir)(const char __user *pathname, umode_t mode);
-
-static asmlinkage long fh_sys_mkdir(const char __user *pathname, umode_t mode)
-{
-	long ret;
-	char *kernel_filename;
-
-	kernel_filename = duplicate_filename(pathname);
-
-	pr_info("mkdir() before: %s, %c, mode: %lu\n", kernel_filename, pathname[0], mode);
-
-	kfree(kernel_filename);
-
-	ret = real_sys_mkdir(pathname, mode);
-
-	pr_info("mkdir() after: %ld\n", ret);
-
-	return ret;
-}
-#endif
 
 /*
  * ядра x86_64 имеют особое соглашение о названиях входных точек системных вызовов.
@@ -559,7 +545,7 @@ static asmlinkage long fh_sys_mkdir(const char __user *pathname, umode_t mode)
 
 static struct ftrace_hook fs_hooks[] = {
 	HOOK("sys_mkdir", fh_sys_mkdir, &real_sys_mkdir), // done
-	HOOK("sys_open", fh_sys_open, &real_sys_open),
+	//HOOK("sys_open", fh_sys_open, &real_sys_open),
 	//HOOK("sys_creat", fh_sys_creat, &real_sys_creat),
 	//HOOK("sys_write", fh_sys_write, &real_sys_write),
 	//HOOK("sys_unlink", fh_sys_unlink, &real_sys_unlink
@@ -608,7 +594,7 @@ int is_valid(const char *filename)
 	else
 	{
 		int is_dir = S_ISDIR(f->f_inode->i_mode);
-		filp_close(f, NULL);
+		filp_close(_f, NULL);
 		return is_dir;
 	}
 }
@@ -636,6 +622,23 @@ int process_filename(const char *filename)
 	return is_valid(filename);
 }
 
+struct file *file_open(const char *path, int flags, int rights) 
+{
+    struct file *filp = NULL;
+    mm_segment_t oldfs;
+    int err = 0;
+
+    oldfs = get_fs();
+    set_fs(get_fs());
+    filp = filp_open(path, flags, rights);
+    set_fs(oldfs);
+    if (IS_ERR(filp)) {
+        err = PTR_ERR(filp);
+        return NULL;
+    }
+    return filp;
+}
+
 int read_config(void)
 {
 	struct file *file;
@@ -644,7 +647,7 @@ int read_config(void)
 	loff_t inner_offset = 0;
 	int return_val = 0;
 
-	file = filp_open(CONFIG_PATH, O_RDONLY, 0);
+	file = file_open(CONFIG_PATH, O_RDONLY, 0);
 	if (IS_ERR(f))
 	{
 		return -1;
@@ -677,7 +680,7 @@ int read_config(void)
  					* 			1 -- файл существует и не является директорией,
  					* 			2 -- передана пустая строка,
  					* 			3 -- указаное имя файла == MONITOR_ALL_MARKER*/
-				
+				pr_info("READ %s\n", data_buff);
 				if (return_val == 3) // считали маркер, будем следить за всеми файлами
 				{
 					kfree((void *)data_buff);
@@ -706,13 +709,18 @@ int read_config(void)
 
 static int fh_init(void)
 {
+#ifndef PTREGS_SYSCALL_STUBS
+	pr_info("Kernel version is not supported\n");
+	return -1;
+#else
 	int err;
-	f = filp_open(LOG_FILE, O_CREAT | O_WRONLY | O_LARGEFILE, 0);
+	f = filp_open(LOG_FILE, O_CREAT | O_TRUNC | O_WRONLY | O_LARGEFILE, 0);
 	if (IS_ERR(f))
 	{
 		pr_info("Unable to open log file\n");
 		return -1;
 	}
+	pr_info("Log file opened\n");
 
 	init(&monitor_dirs);
 	init(&monitor_files);
@@ -738,6 +746,7 @@ static int fh_init(void)
 	pr_info("FH module loaded\n");
 
 	return 0;
+#endif
 }
 module_init(fh_init);
 
@@ -749,7 +758,7 @@ static void fh_exit(void)
 	pr_info("Hooks removed\n");
 	free_list(&monitor_dirs);
 	free_list(&monitor_files);
-	pr_info("Lisis cleared\n");
+	pr_info("Lists cleared\n");
 	pr_info("Module unloaded\n");
 }
 module_exit(fh_exit);
