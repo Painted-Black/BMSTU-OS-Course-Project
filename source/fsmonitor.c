@@ -239,15 +239,16 @@ int check_filename(const char* filename, int search_file, int search_dir)
  */
 static int fh_resolve_hook_address(struct ftrace_hook *hook)
 {
-	if (strcmp(hook->name, "__x64_sys_mkdir") == 0)
-	{
-		hook->address = (unsigned long) 0xffffffffb3cb2680;
-	}
-	else
-	{
-		hook->address = 0;
-	}
+	//if (strcmp(hook->name, "__x64_sys_mkdir") == 0)
+	//{
+	//	hook->address = (unsigned long) 0xffffffffb3cb2680;
+	//}
+	//else
+	//{
+	//	hook->address = 0;
+	//}
 	//hook->address = (unsigned long) 0xffffffff93aa8f80;
+	hook->address = kallsyms_lookup_name(hook->name);
 
 	if (!hook->address)
 	{
@@ -557,8 +558,11 @@ static asmlinkage long fh_sys_mkdir(const char __user *pathname, umode_t mode)
 	}
 
 static struct ftrace_hook fs_hooks[] = {
-	HOOK("sys_mkdir", fh_sys_mkdir, &real_sys_mkdir),
-	//HOOK("sys_execve",  fh_sys_execve,  &real_sys_execve),
+	HOOK("sys_mkdir", fh_sys_mkdir, &real_sys_mkdir), // done
+	HOOK("sys_open", fh_sys_open, &real_sys_open),
+	//HOOK("sys_creat", fh_sys_creat, &real_sys_creat),
+	//HOOK("sys_write", fh_sys_write, &real_sys_write),
+	//HOOK("sys_unlink", fh_sys_unlink, &real_sys_unlink
 };
 
 void my_str_replace(char *str, size_t len, char what, char with)
