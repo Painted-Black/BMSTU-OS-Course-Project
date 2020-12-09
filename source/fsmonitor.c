@@ -13,6 +13,9 @@
 #include <linux/timekeeping.h>
 #include <linux/stat.h>
 #include <linux/types.h>
+#include <linux/dcache.h>
+#include <asm/segment.h>
+#include <linux/buffer_head.h>
 
 MODULE_DESCRIPTION("Example module hooking clone() and execve() via ftrace");
 MODULE_AUTHOR("ilammy <a.lozovsky@gmail.com>");
@@ -142,13 +145,14 @@ char* cut_last_filename(char* filename)
 		}
 		filename[i] = '\0';
 	}
+	return filename;
 }
 
 int write_log(const char *log)
 {
 	time64_t cur_seconds;
 	unsigned long local_time;
-	char new_sl[BUFF_SIZE];
+	char new_sl[BUFF_SIZE], msg[BUFF_SIZE];
 
 	if (log == NULL)
 	{
@@ -164,17 +168,30 @@ int write_log(const char *log)
 
 	cur_seconds = ktime_get_real_seconds();
 	local_time = (u32)(cur_seconds - (sys_tz.tz_minuteswest * 60));
+	snprintf(msg, BUFF_SIZE, "%s", log);
+	pr_info("MSG %s\n", msg);
 
-	snprintf(new_sl, BUFF_SIZE, "%.2lu:%.2lu:%.6lu \t ",
+	snprintf(new_sl, BUFF_SIZE, "%.2lu:%.2lu:%.6lu \t %s\n",
 			(local_time / 3600) % (24),
 			(local_time / 60) % (60),
-			local_time % 60);
+			local_time % 60,
+			log);
+	pr_info("SNPFINTF DONE %s", new_sl);
 
-	kernel_write(f, new_sl, strlen(new_sl), &f->f_pos);
+	loff_t pos = 0;
+	f->f_pos = pos;
+	pr_info("FILE %p FPOS %ld\n", f, pos);
 
-	kernel_write(f, log, strlen(log), &f->f_pos);
+	int ret = kernel_write(f, new_sl, strlen(new_sl), &pos);
+	pr_info("WRITE RET %d\n", ret);
+	//char* cpy = kmalloc(BUFF_SIZE, BUFF_SIZE);
+	//cpy = strcpy(cpy, log);
 
-	//pr_info("Successfully writef log");
+
+	//kernel_write(f, new_sl, strlen(new_sl), &f->f_pos);
+	//kfree(cpy);
+
+	pr_info("Successfully write log");
 	return 0;
 }
 
@@ -208,7 +225,7 @@ int check_filename(const char* filename, int search_file, int search_dir)
 	}
 	if (ret == 0)
 	{
-		pr_info("File not found\n");
+		pr_info("File found\n");
 	}
 	return !ret;
 }
@@ -224,7 +241,7 @@ static int fh_resolve_hook_address(struct ftrace_hook *hook)
 {
 	if (strcmp(hook->name, "__x64_sys_mkdir") == 0)
 	{
-		hook->address = (unsigned long) 0xffffffffbdab2680;
+		hook->address = (unsigned long) 0xffffffffb3cb2680;
 	}
 	else
 	{
@@ -440,15 +457,20 @@ static asmlinkage long fh_sys_mkdir(struct pt_regs *regs)
 {
 	long ret;
 	char *kernel_filename;
-	char buffer[BUFF_SIZE];
-	char *path;
 	char* full_filename;
+	char *path;
+    struct path pwd;
+	char pwd_buff[BUFF_SIZE]; 
 
 	ret = real_sys_mkdir(regs);
 
 	kernel_filename = duplicate_filename((void *)regs->di);
 
-	path = dentry_path_raw(current->fs->pwd.dentry, buffer, BUFF_SIZE);
+ 	pwd = current->fs->pwd;
+ 	path_get(&pwd);
+ 	path = d_path(&pwd, pwd_buff, BUFF_SIZE);
+
+	//path = dentry_path_raw(current->fs->pwd.dentry, buffer, BUFF_SIZE);
 	//path = dentry_path_raw(current->fs->pwd.dentry, buffer, BUFF_SIZE);
 	//pr_info("mkdir(): checking filename %s, pwd: %s\n", kernel_filename, path);
 	//pr_info("register mkdir() before proc pwd: %s\n", current->fs->pwd.dentry->d_iname);
@@ -456,39 +478,43 @@ static asmlinkage long fh_sys_mkdir(struct pt_regs *regs)
 	full_filename = kmalloc(BUFF_SIZE * 2, GFP_KERNEL);
 	if (full_filename == NULL)
 	{
-		pr_info("kmallok() failed -- no trace");
+		pr_info("kmalloc() failed -- no trace");
 		return ret;
 	}
 
 	pr_info("%s -- %s\n", path, kernel_filename);
 	if (kernel_filename[0] != '/')
 	{
-		pr_info("Fixing...\n");
+		//pr_info("Fixing...\n");
 		//full_filename = strcat(path, "/");
 		full_filename = strcat(full_filename, path);
 		full_filename = strcat(full_filename, "/");
 		full_filename = strcat(full_filename, kernel_filename);
-		pr_info("Full filename: %s\n", full_filename);
+		//pr_info("Full filename: %s\n", full_filename);
 	}
 	else
 	{
 		full_filename = strcpy(full_filename, kernel_filename);
-		pr_info("Else full filename: %s\n", full_filename);
+		//pr_info("Else full filename: %s\n", full_filename);
 	}
-	//pr_info("Fill filename: %s\n", full_filename);
-	kfree(kernel_filename);
-	return ret;
-	if (check_filename(path, 0, 1) == 0)
+	full_filename = cut_last_filename(full_filename);
+	//pr_info("Final fill filename: %s\n", full_filename);
+	if (check_filename(full_filename, 0, 1) == 1)
 	{
-		char buff[BUFF_SIZE * 2];
-		pr_info("OK");
-		snprintf(buff, BUFF_SIZE * 2, "Process %d MKDIR '%s' at '%s'. Syscall returned %ld\n",	current->pid, kernel_filename, path, ret);
+		char* buff  = kmalloc(BUFF_SIZE * 2, GFP_KERNEL);
+		if (buff == NULL)
+		{
+			pr_info("Unable to allocate memory\n");
+			return ret;
+		}
+		snprintf(buff, BUFF_SIZE * 2, "Process %d MKDIR '%s'. Syscall returned %ld\0\n",	current->pid, full_filename, ret);
 		pr_info("%s", buff);
-		//write_log(kernel_filename);
+		kfree(buff);
 	}
 
-
-	//kfree(kernel_filename);
+	//kfree(path);
+	kfree(kernel_filename);
+	kfree(full_filename);
 
 	return ret;
 }
@@ -577,8 +603,6 @@ int is_valid(const char *filename)
 	}
 	else
 	{
-		//pr_info("File opened\n");
-		//pr_info("Is dir %d\n", S_ISDIR(f->f_inode->i_mode));
 		int is_dir = S_ISDIR(f->f_inode->i_mode);
 		filp_close(f, NULL);
 		return is_dir;
@@ -678,18 +702,8 @@ int read_config(void)
 
 static int fh_init(void)
 {
-	//struct file* ff;
-	//const char* n = "/home/lander/Source/C++/git/BMSTU-OS-Course-Project/source/";
-	//ff = filp_open(m, 0, 0);
-	//if (IS_ERR(ff))
-	//{
-	//	pr_info("Unable to open file '%s'\n", n);
-	//	return -1;
-	//}
-	//return -1;
 	int err;
-	pr_info("============");
-	f = filp_open(LOG_FILE, O_APPEND | O_CREAT | O_WRONLY, 0);
+	f = filp_open(LOG_FILE, O_CREAT | O_WRONLY | O_LARGEFILE, 0);
 	if (IS_ERR(f))
 	{
 		pr_info("Unable to open log file\n");
