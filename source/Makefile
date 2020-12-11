@@ -2,7 +2,7 @@
 CURRENT = $(shell uname -r)
 KDIR = /lib/modules/$(CURRENT)/build
 PWD = $(shell pwd)
-TARGET = fsmonitor2
+TARGET = fsmonitor
 
 obj-m := $(TARGET).o 
 
