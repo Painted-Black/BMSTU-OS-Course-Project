@@ -10,9 +10,12 @@
 
 int main(void)
 {
-    int fd = open(FILE2, O_RDONLY, 0);
-    int fd2 = openat("Makefile", 0, 0);
+    int fd = openat(0, FILE2, O_RDONLY, 0);
+    int fd2 = openat(fd, "Makefile", 0, 0);
+    // sleep(10);
+    int fd3 = openat(fd, "stop", 0, 0);
     printf("Fd: %d\n", fd);
     printf("Fd2: %d\n", fd2);
+    printf("Fd3: %d\n", fd3);
     close(fd);
 }
