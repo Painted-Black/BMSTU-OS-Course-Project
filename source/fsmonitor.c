@@ -813,6 +813,101 @@ static asmlinkage long fh_sys_unlink(struct pt_regs *regs)
 	return ret;
 }
 
+// static asmlinkage long sys_unlinkat(int dfd, const char __user * pathname, int flag);
+
+static asmlinkage long (*real_sys_unlinkat)(struct pt_regs *regs);
+
+static asmlinkage long fh_sys_unlinkat(struct pt_regs *regs)
+{
+	int ret;
+	char *kernel_filename;
+	char *proc_filename;
+	char *buffer;
+	int fd;
+	char *full_filename;
+
+	ret = real_sys_unlinkat(regs);
+	fd = (long)(void *)regs->di;
+	//pr_info("FD: %d\n", fd);
+
+	kernel_filename = duplicate_filename((void *)regs->si);
+
+	if (kernel_filename == NULL)
+	{
+		pr_info("Unable to duplicate filename\n");
+		return ret;
+	}
+
+	proc_filename = kmalloc(BUFF_SIZE, GFP_KERNEL);
+	buffer = kmalloc(BUFF_SIZE, GFP_KERNEL);
+	full_filename = kmalloc(BUFF_SIZE, GFP_KERNEL);
+	if (proc_filename == NULL || buffer == NULL || full_filename == NULL)
+	{
+		pr_info("Unable to allocate memory\n");
+		return ret;
+	}
+
+	if (fd != AT_FDCWD && kernel_filename[0] != '/')
+	{
+		char *path;
+		struct path pwd;
+		char *pwd_buff;
+		struct file *_file;
+
+		snprintf(proc_filename, BUFF_SIZE, "/proc/%d/fd/%d", current->pid, fd);
+		_file = filp_open(proc_filename, 0, 0);
+
+		pwd_buff = kmalloc(BUFF_SIZE, GFP_KERNEL);
+		if (pwd_buff == NULL)
+		{
+			pr_info("Unable to allocate memory\n");
+			return ret;
+		}
+		pwd = _file->f_path;
+		path_get(&pwd);
+		path = d_path(&pwd, pwd_buff, BUFF_SIZE);
+		kfree(pwd_buff);
+
+		full_filename = strcat(full_filename, path);
+		full_filename = strcat(full_filename, "/");
+		full_filename = strcat(full_filename, kernel_filename);
+		//pr_info("FULL FNAME %s\n", full_filename);
+	}
+	else
+	{
+		full_filename = strcpy(full_filename, kernel_filename);
+	}
+	//pr_info("FULL FNAME %s, %s\n", full_filename, kernel_filename);
+
+	// if (strcmp(full_filename, "/home/lander/Desktop/BMSTU-OS-Course-Project/source/Makefile") == 0)
+	// {
+	// 	pr_info("FULL FNAME %s, %s\n", full_filename, kernel_filename);
+	// }
+
+
+	if (check_filename(full_filename, 1, 1) == 1)
+	{
+		//pr_info("Found");
+		char *buff = kmalloc(BUFF_SIZE * 2, GFP_KERNEL);
+		if (buff == NULL)
+		{
+			pr_info("Unable to allocate memory\n");
+			return ret;
+		}
+		snprintf(buff, BUFF_SIZE * 2, "Process %d OPENAT '%s'. Syscall returned %d\n",
+				 current->pid, full_filename, ret);
+		pr_info("%s", buff);
+		write_log(buff);
+		kfree(buff);
+	}
+
+	kfree(kernel_filename);
+	kfree(proc_filename);
+	kfree(full_filename);
+
+	return ret;
+}
+
 //static asmlinkage long sys_mkdirat(int dfd, const char __user * pathname, umode_t mode);
 
 static asmlinkage long (*real_sys_mkdirat)(struct pt_regs *regs);
@@ -1000,9 +1095,9 @@ static struct ftrace_hook fs_hooks[] = {
 	//HOOK("sys_openat", fh_sys_openat, &real_sys_openat), // done
 	//HOOK("sys_creat", fh_sys_creat, &real_sys_creat), // done
 	//HOOK("sys_unlink", fh_sys_unlink, &real_sys_unlink) // done
-	//HOOK("sys_write", fh_sys_write, &real_sys_write), // fails
-	//HOOK("sys_unlinkat", fh_sys_unlinkat, &real_sys_unlinkat),
-	HOOK("sys_mkdirat", fh_sys_mkdirat, &real_sys_mkdirat)
+	HOOK("sys_write", fh_sys_write, &real_sys_write), // fails
+	//HOOK("sys_unlinkat", fh_sys_unlinkat, &real_sys_unlinkat), // done
+	//HOOK("sys_mkdirat", fh_sys_mkdirat, &real_sys_mkdirat) // done
 };
 
 void my_str_replace(char *str, size_t len, char what, char with)
