@@ -657,24 +657,90 @@ static asmlinkage long fh_sys_creat(struct pt_regs *regs)
 	return ret;
 }
 
-static asmlinkage long (*real_sys_write)(unsigned int fd, const char __user *buf,
-										 size_t count);
+//static asmlinkage long (*real_sys_write)(unsigned int fd, const char __user *buf,
+//										 size_t count);
 
-static asmlinkage long fh_sys_write(unsigned int fd, const char __user *buf,
-									size_t count)
+static asmlinkage long (*real_sys_write)(struct pt_regs *regs);
+
+static asmlinkage long fh_sys_write(struct pt_regs *regs)
 {
-	long ret;
-	char kernel_filename[BUFF_SIZE];
-	// char buff[BUFF_SIZE];
+	int ret;
+	char *proc_filename;
+	char *buffer;
+	int fd;
+	char *full_filename;
 
-	ret = real_sys_write(fd, buf, count);
-	//struct path p;
+	ret = real_sys_write(regs);
+	fd = (long)(void *)regs->di;
+	pr_info("FD: %d\n", fd);
 
-	// asmlinkage long sys_creat(const char __user *pathname, umode_t mode);
-	// p = d_path(fdarr[0], pwd_buff, BUFF_SIZE);
-	//pr_info("MAX %d\n", *_fd.open_fds);
+	proc_filename = kmalloc(BUFF_SIZE, GFP_KERNEL);
+	buffer = kmalloc(BUFF_SIZE, GFP_KERNEL);
+	full_filename = kmalloc(BUFF_SIZE, GFP_KERNEL);
+	if (proc_filename == NULL || buffer == NULL || full_filename == NULL)
+	{
+		pr_info("Unable to allocate memory\n");
+		return ret;
+	}
 
-	//printk(KERN_INFO "SYS WRITE TO %d\n", fd);
+	char *path;
+	struct path pwd;
+	char *pwd_buff;
+	struct file *_file;
+
+	snprintf(proc_filename, BUFF_SIZE, "/proc/%d/fd/%d", current->pid, fd);
+	_file = filp_open(proc_filename, 0, 0);
+	pr_info("F_PATH %p\n", &_file->f_path.dentry->d_name);
+	return ret;
+	if (_file->f_path.dentry == NULL)
+	{
+		pr_info("F_PATH IS NULL");
+	}
+	return ret;
+
+	pwd_buff = kmalloc(BUFF_SIZE, GFP_KERNEL);
+	if (pwd_buff == NULL)
+	{
+		pr_info("Unable to allocate memory\n");
+		return ret;
+	}
+	pwd = _file->f_path;
+	pr_info("PWD %s\n", pwd.dentry->d_name.name);
+	return ret;
+
+	path_get(&pwd);
+	pr_info("PATH get %s\n", pwd.dentry->d_name.name);
+	return ret;
+	path = d_path(&pwd, pwd_buff, BUFF_SIZE);
+	kfree(pwd_buff);
+
+	full_filename = strcat(full_filename, path);
+	//full_filename = strcat(full_filename, "/");
+	//full_filename = strcat(full_filename, kernel_filename);
+	//pr_info("FULL FNAME %s\n", full_filename);
+	pr_info("FULL FNAME %s\n", full_filename);
+
+
+	// if (check_filename(full_filename, 1, 1) == 1)
+	// {
+	// 	//pr_info("Found");
+	// 	char *buff = kmalloc(BUFF_SIZE * 2, GFP_KERNEL);
+	// 	if (buff == NULL)
+	// 	{
+	// 		pr_info("Unable to allocate memory\n");
+	// 		return ret;
+	// 	}
+	// 	snprintf(buff, BUFF_SIZE * 2, "Process %d WRITE AT '%s'. Syscall returned %d\n",
+	// 			 current->pid, full_filename, ret);
+	// 	pr_info("%s", buff);
+	// 	write_log(buff);
+	// 	kfree(buff);
+	// }
+
+	//kfree(kernel_filename);
+	kfree(proc_filename);
+	kfree(full_filename);
+
 	return ret;
 }
 
@@ -747,6 +813,101 @@ static asmlinkage long fh_sys_unlink(struct pt_regs *regs)
 	return ret;
 }
 
+//static asmlinkage long sys_mkdirat(int dfd, const char __user * pathname, umode_t mode);
+
+static asmlinkage long (*real_sys_mkdirat)(struct pt_regs *regs);
+
+static asmlinkage long fh_sys_mkdirat(struct pt_regs *regs)
+{
+	int ret;
+	char *kernel_filename;
+	char *proc_filename;
+	char *buffer;
+	int fd;
+	char *full_filename;
+
+	ret = real_sys_mkdirat(regs);
+	fd = (long)(void *)regs->di;
+	//pr_info("FD: %d\n", fd);
+
+	kernel_filename = duplicate_filename((void *)regs->si);
+
+	if (kernel_filename == NULL)
+	{
+		pr_info("Unable to duplicate filename\n");
+		return ret;
+	}
+
+	proc_filename = kmalloc(BUFF_SIZE, GFP_KERNEL);
+	buffer = kmalloc(BUFF_SIZE, GFP_KERNEL);
+	full_filename = kmalloc(BUFF_SIZE, GFP_KERNEL);
+	if (proc_filename == NULL || buffer == NULL || full_filename == NULL)
+	{
+		pr_info("Unable to allocate memory\n");
+		return ret;
+	}
+
+	if (fd != AT_FDCWD && kernel_filename[0] != '/')
+	{
+		char *path;
+		struct path pwd;
+		char *pwd_buff;
+		struct file *_file;
+
+		snprintf(proc_filename, BUFF_SIZE, "/proc/%d/fd/%d", current->pid, fd);
+		_file = filp_open(proc_filename, 0, 0);
+
+		pwd_buff = kmalloc(BUFF_SIZE, GFP_KERNEL);
+		if (pwd_buff == NULL)
+		{
+			pr_info("Unable to allocate memory\n");
+			return ret;
+		}
+		pwd = _file->f_path;
+		path_get(&pwd);
+		path = d_path(&pwd, pwd_buff, BUFF_SIZE);
+		kfree(pwd_buff);
+
+		full_filename = strcat(full_filename, path);
+		//full_filename = strcat(full_filename, "/");
+		//full_filename = strcat(full_filename, kernel_filename);
+		//pr_info("FULL FNAME %s\n", full_filename);
+	}
+	else
+	{
+		full_filename = strcpy(full_filename, kernel_filename);
+	}
+	pr_info("FULL FNAME %s, %s\n", full_filename, kernel_filename);
+
+	// if (strcmp(full_filename, "/home/lander/Desktop/BMSTU-OS-Course-Project/source/Makefile") == 0)
+	// {
+	// 	pr_info("FULL FNAME %s, %s\n", full_filename, kernel_filename);
+	// }
+
+
+	if (check_filename(full_filename, 0, 1) == 1)
+	{
+		//pr_info("Found");
+		char *buff = kmalloc(BUFF_SIZE * 2, GFP_KERNEL);
+		if (buff == NULL)
+		{
+			pr_info("Unable to allocate memory\n");
+			return ret;
+		}
+		snprintf(buff, BUFF_SIZE * 2, "Process %d MKDIR '%s' AT '%s'. Syscall returned %d\n",
+				 current->pid, kernel_filename, full_filename, ret);
+		pr_info("%s", buff);
+		write_log(buff);
+		kfree(buff);
+	}
+
+	kfree(kernel_filename);
+	kfree(proc_filename);
+	kfree(full_filename);
+
+	return ret;
+}
+
 static asmlinkage long (*real_sys_mkdir)(struct pt_regs *regs);
 
 static asmlinkage long fh_sys_mkdir(struct pt_regs *regs)
@@ -759,6 +920,7 @@ static asmlinkage long fh_sys_mkdir(struct pt_regs *regs)
 	char *pwd_buff;
 
 	ret = real_sys_mkdir(regs);
+	//pr_info("MKDIR\n");
 
 	kernel_filename = duplicate_filename((void *)regs->di);
 	if (kernel_filename == NULL)
@@ -835,10 +997,12 @@ static asmlinkage long fh_sys_mkdir(struct pt_regs *regs)
 
 static struct ftrace_hook fs_hooks[] = {
 	//HOOK("sys_mkdir", fh_sys_mkdir, &real_sys_mkdir), // done
-	HOOK("sys_openat", fh_sys_openat, &real_sys_openat)
+	//HOOK("sys_openat", fh_sys_openat, &real_sys_openat), // done
 	//HOOK("sys_creat", fh_sys_creat, &real_sys_creat), // done
-	//HOOK("sys_write", fh_sys_write, &real_sys_write),
 	//HOOK("sys_unlink", fh_sys_unlink, &real_sys_unlink) // done
+	//HOOK("sys_write", fh_sys_write, &real_sys_write), // fails
+	//HOOK("sys_unlinkat", fh_sys_unlinkat, &real_sys_unlinkat),
+	HOOK("sys_mkdirat", fh_sys_mkdirat, &real_sys_mkdirat)
 };
 
 void my_str_replace(char *str, size_t len, char what, char with)
@@ -933,14 +1097,14 @@ struct file *file_open(const char *path, int flags, int rights)
 
 int read_config(void)
 {
-	struct file *file;
+	struct file *config_file;
 	int res = 1;
 	loff_t offset = 0;
 	loff_t inner_offset = 0;
 	int return_val = 0;
 
-	file = file_open(CONFIG_PATH, O_RDONLY, 0);
-	if (IS_ERR(f))
+	config_file = file_open(CONFIG_PATH, O_RDONLY, 0);
+	if (IS_ERR(config_file))
 	{
 		return -1;
 	}
@@ -958,7 +1122,7 @@ int read_config(void)
 		else
 		{
 			offset = inner_offset;
-			res = kernel_read(file, data_buff, BUFF_SIZE, &offset);
+			res = kernel_read(config_file, data_buff, BUFF_SIZE, &offset);
 			if (res > 0)
 			{
 				my_str_replace(data_buff, res, '\n', '\0');
@@ -992,7 +1156,7 @@ int read_config(void)
 			}
 		}
 	}
-	filp_close(file, NULL);
+	filp_close(config_file, NULL);
 	return return_val;
 }
 
@@ -1004,13 +1168,6 @@ static int fh_init(void)
 	return -1;
 #else
 	int err;
-	f = filp_open(LOG_FILE, O_CREAT | O_TRUNC | O_WRONLY | O_LARGEFILE, 0);
-	if (IS_ERR(f))
-	{
-		pr_info("Unable to open log file\n");
-		return -1;
-	}
-	pr_info("Log file opened\n");
 
 	init(&monitor_dirs);
 	init(&monitor_files);
@@ -1024,6 +1181,14 @@ static int fh_init(void)
 			pr_info("Files writen in config does not exist\n");
 		return err;
 	}
+
+	f = filp_open(LOG_FILE, O_CREAT | O_TRUNC | O_WRONLY | O_LARGEFILE, 0);
+	if (IS_ERR(f))
+	{
+		pr_info("Unable to open log file\n");
+		return -1;
+	}
+	pr_info("Log file opened\n");
 
 	err = fh_install_hooks(fs_hooks, ARRAY_SIZE(fs_hooks));
 	if (err)
