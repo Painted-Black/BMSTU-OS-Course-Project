@@ -672,7 +672,6 @@ static asmlinkage long fh_sys_write(struct pt_regs *regs)
 
 	ret = real_sys_write(regs);
 	fd = (long)(void *)regs->di;
-	pr_info("FD: %d\n", fd);
 
 	proc_filename = kmalloc(BUFF_SIZE, GFP_KERNEL);
 	buffer = kmalloc(BUFF_SIZE, GFP_KERNEL);
@@ -690,13 +689,11 @@ static asmlinkage long fh_sys_write(struct pt_regs *regs)
 
 	snprintf(proc_filename, BUFF_SIZE, "/proc/%d/fd/%d", current->pid, fd);
 	_file = filp_open(proc_filename, 0, 0);
-	pr_info("F_PATH %p\n", &_file->f_path.dentry->d_name);
-	return ret;
-	if (_file->f_path.dentry == NULL)
+	if (IS_ERR(_file))
 	{
-		pr_info("F_PATH IS NULL");
+		//pr_info("Unable to open proc file\n");
+		return ret;
 	}
-	return ret;
 
 	pwd_buff = kmalloc(BUFF_SIZE, GFP_KERNEL);
 	if (pwd_buff == NULL)
@@ -705,37 +702,34 @@ static asmlinkage long fh_sys_write(struct pt_regs *regs)
 		return ret;
 	}
 	pwd = _file->f_path;
-	pr_info("PWD %s\n", pwd.dentry->d_name.name);
-	return ret;
 
 	path_get(&pwd);
-	pr_info("PATH get %s\n", pwd.dentry->d_name.name);
-	return ret;
 	path = d_path(&pwd, pwd_buff, BUFF_SIZE);
+	//pr_info("PATH get %s\n", path);
 	kfree(pwd_buff);
 
 	full_filename = strcat(full_filename, path);
 	//full_filename = strcat(full_filename, "/");
 	//full_filename = strcat(full_filename, kernel_filename);
 	//pr_info("FULL FNAME %s\n", full_filename);
-	pr_info("FULL FNAME %s\n", full_filename);
+	//pr_info("FULL FNAME %s\n", full_filename);
 
 
-	// if (check_filename(full_filename, 1, 1) == 1)
-	// {
-	// 	//pr_info("Found");
-	// 	char *buff = kmalloc(BUFF_SIZE * 2, GFP_KERNEL);
-	// 	if (buff == NULL)
-	// 	{
-	// 		pr_info("Unable to allocate memory\n");
-	// 		return ret;
-	// 	}
-	// 	snprintf(buff, BUFF_SIZE * 2, "Process %d WRITE AT '%s'. Syscall returned %d\n",
-	// 			 current->pid, full_filename, ret);
-	// 	pr_info("%s", buff);
-	// 	write_log(buff);
-	// 	kfree(buff);
-	// }
+	if (check_filename(full_filename, 1, 1) == 1)
+	{
+		//pr_info("Found");
+		char *buff = kmalloc(BUFF_SIZE * 2, GFP_KERNEL);
+		if (buff == NULL)
+		{
+			pr_info("Unable to allocate memory\n");
+			return ret;
+		}
+		snprintf(buff, BUFF_SIZE * 2, "Process %d WRITE AT '%s'. Syscall returned %d\n",
+				 current->pid, full_filename, ret);
+		pr_info("%s", buff);
+		write_log(buff);
+		kfree(buff);
+	}
 
 	//kfree(kernel_filename);
 	kfree(proc_filename);
