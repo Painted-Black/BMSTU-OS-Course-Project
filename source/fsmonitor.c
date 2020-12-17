@@ -492,8 +492,10 @@ static char *duplicate_filename(const char __user *filename)
 //asmlinkage long sys_open(const char __user *filename,
 //				int flags, umode_t mode);
 
+// настоящий обработчик системного вызова openat
 static asmlinkage long (*real_sys_openat)(struct pt_regs *regs);
 
+// обработчик системного вызова openat
 static asmlinkage long fh_sys_openat(struct pt_regs *regs)
 {
 	int ret;
@@ -506,8 +508,8 @@ static asmlinkage long fh_sys_openat(struct pt_regs *regs)
 	ret = real_sys_openat(regs);
 	fd = (long)(void *)regs->di;
 
+	// копируем имя директории из пространства пользователя в пространство ядра
 	kernel_filename = duplicate_filename((void *)regs->si);
-
 	if (kernel_filename == NULL)
 	{
 		pr_info("Unable to duplicate filename\n");
@@ -527,6 +529,7 @@ static asmlinkage long fh_sys_openat(struct pt_regs *regs)
 		return ret;
 	}
 
+	// если путь не является абсолютным, получаем абсолютный путь до файла, который связан с открытым файловым дескриптором
 	if (fd != AT_FDCWD && kernel_filename[0] != '/')
 	{
 		char *path;
@@ -556,12 +559,12 @@ static asmlinkage long fh_sys_openat(struct pt_regs *regs)
 		full_filename = strcat(full_filename, "/");
 		full_filename = strcat(full_filename, kernel_filename);
 	}
-	else
+	else //путь абсолютный, ничего делать не надо
 	{
 		full_filename = strcpy(full_filename, kernel_filename);
 	}
 
-
+	// проверяем, находится ли файл или директория в списке отслеживаемых
 	if (check_filename(full_filename, 1, 1) == 1)
 	{
 		char *buff = kmalloc(BUFF_SIZE * 2, GFP_KERNEL);
@@ -576,7 +579,6 @@ static asmlinkage long fh_sys_openat(struct pt_regs *regs)
 		}
 		snprintf(buff, BUFF_SIZE * 2, "Process %d OPENAT '%s'. Syscall returned %d\n",
 				 current->pid, full_filename, ret);
-		pr_info("%s", buff);
 		write_log(buff);
 		kfree(buff);
 	}
@@ -590,8 +592,10 @@ static asmlinkage long fh_sys_openat(struct pt_regs *regs)
 }
 
 //static asmlinkage long (*real_sys_creat)(const char __user *pathname, umode_t mode);
+// настоящий обработчик системного вызова creat
 static asmlinkage long (*real_sys_creat)(struct pt_regs *regs);
 
+// обработчик системного вызова creat
 static asmlinkage long fh_sys_creat(struct pt_regs *regs)
 {
 	int ret;
@@ -603,6 +607,7 @@ static asmlinkage long fh_sys_creat(struct pt_regs *regs)
 
 	ret = real_sys_creat(regs);
 
+	// копируем имя директории из пространства пользователя в пространство ядра
 	kernel_filename = duplicate_filename((void *)regs->di);
 	if (kernel_filename == NULL)
 	{
@@ -610,11 +615,15 @@ static asmlinkage long fh_sys_creat(struct pt_regs *regs)
 		return ret;
 	}
 
+	// получаем путь до текущей рабочей директории процесса
 	pwd_buff = kmalloc(BUFF_SIZE, GFP_KERNEL);
 	full_filename = kmalloc(BUFF_SIZE, GFP_KERNEL);
 	if (pwd_buff == NULL || full_filename == NULL)
 	{
 		pr_info("Unable to allocate memory\n");
+		kfree(kernel_filename);
+		if (pwd_buff != NULL) kfree(pwd_buff);
+		if (full_filename != NULL) kfree(full_filename);
 		return ret;
 	}
 
@@ -622,41 +631,39 @@ static asmlinkage long fh_sys_creat(struct pt_regs *regs)
 	path_get(&pwd);
 	path = d_path(&pwd, pwd_buff, BUFF_SIZE);
 
-	//pr_info("%s -- %s\n", path, kernel_filename);
 	if (kernel_filename[0] != '/')
 	{
-		//pr_info("Fixing...\n");
-		//full_filename = strcat(path, "/");
 		full_filename = strcat(full_filename, path);
 		full_filename = strcat(full_filename, "/");
 		full_filename = strcat(full_filename, kernel_filename);
-		//pr_info("Full filename: %s\n", full_filename);
 	}
 	else
 	{
 		full_filename = strcpy(full_filename, kernel_filename);
-		//pr_info("Else full filename: %s\n", full_filename);
 	}
 	full_filename = cut_last_filename(full_filename);
-	//pr_info("Final fill filename: %s\n", full_filename);
-	if (check_filename(full_filename, 1, 1) == 1)
+
+	// проверяем, находится ли файл или директория в списке отслеживаемых
+	if (check_filename(full_filename, 0, 1) == 1)
 	{
-		//pr_info("Found");
 		char *buff = kmalloc(BUFF_SIZE * 2, GFP_KERNEL);
 		if (buff == NULL)
 		{
 			pr_info("Unable to allocate memory\n");
+			kfree(kernel_filename);
+			kfree(full_filename);
+			kfree(pwd_buff);
 			return ret;
 		}
 		snprintf(buff, BUFF_SIZE * 2, "Process %d CREAT '%s' at '%s'. Syscall returned %d\n",
 				 current->pid, kernel_filename, full_filename, ret);
-		//pr_info("%s", buff);
 		write_log(buff);
 		kfree(buff);
 	}
 
 	kfree(kernel_filename);
 	kfree(full_filename);
+	kfree(pwd_buff);
 
 	return ret;
 }
@@ -742,8 +749,10 @@ static asmlinkage long fh_sys_write(struct pt_regs *regs)
 	return ret;
 }
 
+// настоящий обработчик системного вызова unlink
 static asmlinkage long (*real_sys_unlink)(struct pt_regs *regs);
 
+// обработчик системного вызова unlink
 static asmlinkage long fh_sys_unlink(struct pt_regs *regs)
 {
 	int ret;
@@ -755,6 +764,7 @@ static asmlinkage long fh_sys_unlink(struct pt_regs *regs)
 
 	ret = real_sys_unlink(regs);
 
+	// копируем имя директории из пространства пользователя в пространство ядра
 	kernel_filename = duplicate_filename((void *)regs->di);
 	if (kernel_filename == NULL)
 	{
@@ -767,46 +777,48 @@ static asmlinkage long fh_sys_unlink(struct pt_regs *regs)
 	if (pwd_buff == NULL || full_filename == NULL)
 	{
 		pr_info("Unable to allocate memory\n");
+		kfree(kernel_filename);
+		if (pwd_buff != NULL) kfree(pwd_buff);
+		if (full_filename != NULL) kfree(full_filename);
 		return ret;
 	}
 
+	// получаем путь до текущей рабочей директории процесса
 	pwd = current->fs->pwd;
 	path_get(&pwd);
 	path = d_path(&pwd, pwd_buff, BUFF_SIZE);
 
-	//pr_info("%s -- %s\n", path, kernel_filename);
 	if (kernel_filename[0] != '/')
 	{
-		//pr_info("Fixing...\n");
-		//full_filename = strcat(path, "/");
 		full_filename = strcat(full_filename, path);
 		full_filename = strcat(full_filename, "/");
 		full_filename = strcat(full_filename, kernel_filename);
-		//pr_info("Full filename: %s\n", full_filename);
 	}
 	else
 	{
 		full_filename = strcpy(full_filename, kernel_filename);
-		//pr_info("Else full filename: %s\n", full_filename);
 	}
-	//full_filename = cut_last_filename(full_filename);
-	//pr_info("Final fill filename: %s\n", full_filename);
+	
+	// проверяем, находится ли файл или директория в списке отслеживаемых
 	if (check_filename(full_filename, 1, 1) == 1)
 	{
 		char *buff = kmalloc(BUFF_SIZE * 2, GFP_KERNEL);
 		if (buff == NULL)
 		{
 			pr_info("Unable to allocate memory\n");
+			kfree(kernel_filename);
+			kfree(full_filename);
+			kfree(pwd_buff);
 			return ret;
 		}
 		snprintf(buff, BUFF_SIZE * 2, "Process %d UNLINK '%s'. Syscall returned %d\n", current->pid, full_filename, ret);
-		//pr_info("%s", buff);
 		write_log(buff);
 		kfree(buff);
 	}
 
 	kfree(kernel_filename);
 	kfree(full_filename);
+	kfree(pwd_buff);
 
 	return ret;
 }
@@ -1016,6 +1028,7 @@ static asmlinkage long fh_sys_mkdir(struct pt_regs *regs)
 
 	ret = real_sys_mkdir(regs);
 
+	// копируем имя директории из пространства пользователя в пространство ядра
 	kernel_filename = duplicate_filename((void *)regs->di);
 	if (kernel_filename == NULL)
 	{
@@ -1033,7 +1046,8 @@ static asmlinkage long fh_sys_mkdir(struct pt_regs *regs)
 		if (full_filename != NULL) kfree(full_filename);
 		return ret;
 	}
-
+	
+	// получаем путь до текущей рабочей директории процесса
 	pwd = current->fs->pwd;
 	path_get(&pwd);
 	path = d_path(&pwd, pwd_buff, BUFF_SIZE);
@@ -1049,6 +1063,8 @@ static asmlinkage long fh_sys_mkdir(struct pt_regs *regs)
 		full_filename = strcpy(full_filename, kernel_filename);
 	}
 	full_filename = cut_last_filename(full_filename);
+
+	// проверяем, находится ли файл или директория в списке отслеживаемых
 	if (check_filename(full_filename, 0, 1) == 1)
 	{
 		char *buff = kmalloc(BUFF_SIZE * 2, GFP_KERNEL);
@@ -1060,7 +1076,7 @@ static asmlinkage long fh_sys_mkdir(struct pt_regs *regs)
 			kfree(full_filename);
 			return ret;
 		}
-		snprintf(buff, BUFF_SIZE * 2, "Process %d MKDIR '%s'. Syscall returned %ld\n", current->pid, full_filename, ret);
+		snprintf(buff, BUFF_SIZE * 2, "Process %d MKDIR '%s' AT %s'. Syscall returned %ld\n", current->pid, kernel_filename, full_filename, ret);
 		write_log(buff);
 		kfree(buff);
 	}
@@ -1087,16 +1103,6 @@ static asmlinkage long fh_sys_mkdir(struct pt_regs *regs)
 		.function = (_function),          \
 		.original = (_original),          \
 	}
-
-static struct ftrace_hook fs_hooks[] = {
-	//HOOK("sys_mkdir", fh_sys_mkdir, &real_sys_mkdir), // tested
-	HOOK("sys_openat", fh_sys_openat, &real_sys_openat), // done
-	//HOOK("sys_creat", fh_sys_creat, &real_sys_creat), // done
-	//HOOK("sys_unlink", fh_sys_unlink, &real_sys_unlink) // done
-	//HOOK("sys_write", fh_sys_write, &real_sys_write), // done
-	//HOOK("sys_unlinkat", fh_sys_unlinkat, &real_sys_unlinkat), // done
-	//HOOK("sys_mkdirat", fh_sys_mkdirat, &real_sys_mkdirat) // done
-};
 
 void my_str_replace(char *str, size_t len, char what, char with)
 {
@@ -1252,6 +1258,16 @@ int read_config(void)
 	filp_close(config_file, NULL);
 	return return_val;
 }
+
+static struct ftrace_hook fs_hooks[] = {
+	//HOOK("sys_mkdir", fh_sys_mkdir, &real_sys_mkdir), // tested
+	//HOOK("sys_openat", fh_sys_openat, &real_sys_openat), // tested
+	//HOOK("sys_creat", fh_sys_creat, &real_sys_creat), // tested
+	HOOK("sys_unlink", fh_sys_unlink, &real_sys_unlink) // tested
+	//HOOK("sys_write", fh_sys_write, &real_sys_write), // done
+	//HOOK("sys_unlinkat", fh_sys_unlinkat, &real_sys_unlinkat), // done
+	//HOOK("sys_mkdirat", fh_sys_mkdirat, &real_sys_mkdirat) // done
+};
 
 static int fh_init(void)
 {
