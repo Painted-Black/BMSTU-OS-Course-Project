@@ -1268,8 +1268,8 @@ static struct ftrace_hook fs_hooks[] = {
 	//HOOK("sys_openat", fh_sys_openat, &real_sys_openat), // tested
 	//HOOK("sys_creat", fh_sys_creat, &real_sys_creat), // tested
 	//HOOK("sys_unlink", fh_sys_unlink, &real_sys_unlink) // tested
-	HOOK("sys_write", fh_sys_write, &real_sys_write), // done
-	//HOOK("sys_unlinkat", fh_sys_unlinkat, &real_sys_unlinkat), // done
+	//HOOK("sys_write", fh_sys_write, &real_sys_write), // tested
+	HOOK("sys_unlinkat", fh_sys_unlinkat, &real_sys_unlinkat), // done
 	//HOOK("sys_mkdirat", fh_sys_mkdirat, &real_sys_mkdirat) // done
 };
 
