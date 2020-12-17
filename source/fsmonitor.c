@@ -559,7 +559,7 @@ static asmlinkage long fh_sys_openat(struct pt_regs *regs)
 		full_filename = strcat(full_filename, "/");
 		full_filename = strcat(full_filename, kernel_filename);
 	}
-	else //путь абсолютный, ничего делать не надо
+	else // путь абсолютный, ничего делать не надо
 	{
 		full_filename = strcpy(full_filename, kernel_filename);
 	}
@@ -829,8 +829,10 @@ static asmlinkage long fh_sys_unlink(struct pt_regs *regs)
 
 // static asmlinkage long sys_unlinkat(int dfd, const char __user * pathname, int flag);
 
+// настоящий обработчик системного вызова unlinkat
 static asmlinkage long (*real_sys_unlinkat)(struct pt_regs *regs);
 
+// обработчик системного вызова unlinkat
 static asmlinkage long fh_sys_unlinkat(struct pt_regs *regs)
 {
 	int ret;
@@ -842,8 +844,8 @@ static asmlinkage long fh_sys_unlinkat(struct pt_regs *regs)
 
 	ret = real_sys_unlinkat(regs);
 	fd = (long)(void *)regs->di;
-	//pr_info("FD: %d\n", fd);
 
+	// копируем имя файла из пространства пользователя в пространство ядра
 	kernel_filename = duplicate_filename((void *)regs->si);
 
 	if (kernel_filename == NULL)
@@ -858,9 +860,13 @@ static asmlinkage long fh_sys_unlinkat(struct pt_regs *regs)
 	if (proc_filename == NULL || buffer == NULL || full_filename == NULL)
 	{
 		pr_info("Unable to allocate memory\n");
+		kfree(kernel_filename);
+		if (proc_filename != NULL) kfree(proc_filename);
+		if (buffer != NULL) kfree(buffer);
+		if (full_filename != NULL) kfree(full_filename);
 		return ret;
 	}
-
+	// если путь не является абсолютным, получаем абсолютный путь до файла, который связан с открытым файловым дескриптором
 	if (fd != AT_FDCWD && kernel_filename[0] != '/')
 	{
 		char *path;
@@ -875,6 +881,9 @@ static asmlinkage long fh_sys_unlinkat(struct pt_regs *regs)
 		if (pwd_buff == NULL)
 		{
 			pr_info("Unable to allocate memory\n");
+			kfree(kernel_filename);
+			kfree(proc_filename);
+			kfree(full_filename);
 			return ret;
 		}
 		pwd = _file->f_path;
@@ -885,32 +894,26 @@ static asmlinkage long fh_sys_unlinkat(struct pt_regs *regs)
 		full_filename = strcat(full_filename, path);
 		full_filename = strcat(full_filename, "/");
 		full_filename = strcat(full_filename, kernel_filename);
-		//pr_info("FULL FNAME %s\n", full_filename);
 	}
-	else
+	else // путь абсолютный, ничего делать не надо
 	{
 		full_filename = strcpy(full_filename, kernel_filename);
 	}
-	//pr_info("FULL FNAME %s, %s\n", full_filename, kernel_filename);
 
-	// if (strcmp(full_filename, "/home/lander/Desktop/BMSTU-OS-Course-Project/source/Makefile") == 0)
-	// {
-	// 	pr_info("FULL FNAME %s, %s\n", full_filename, kernel_filename);
-	// }
-
-
+	// проверяем, находится ли файл или директория в списке отслеживаемых
 	if (check_filename(full_filename, 1, 1) == 1)
 	{
-		//pr_info("Found");
 		char *buff = kmalloc(BUFF_SIZE * 2, GFP_KERNEL);
 		if (buff == NULL)
 		{
 			pr_info("Unable to allocate memory\n");
+			kfree(kernel_filename);
+			kfree(proc_filename);
+			kfree(full_filename);
 			return ret;
 		}
-		snprintf(buff, BUFF_SIZE * 2, "Process %d OPENAT '%s'. Syscall returned %d\n",
+		snprintf(buff, BUFF_SIZE * 2, "Process %d UNLINKAT '%s'. Syscall returned %d\n",
 				 current->pid, full_filename, ret);
-		pr_info("%s", buff);
 		write_log(buff);
 		kfree(buff);
 	}
@@ -924,8 +927,10 @@ static asmlinkage long fh_sys_unlinkat(struct pt_regs *regs)
 
 //static asmlinkage long sys_mkdirat(int dfd, const char __user * pathname, umode_t mode);
 
+// настоящий обработчик системного вызова mkdirat
 static asmlinkage long (*real_sys_mkdirat)(struct pt_regs *regs);
 
+// обработчик системного вызова mkdirat
 static asmlinkage long fh_sys_mkdirat(struct pt_regs *regs)
 {
 	int ret;
@@ -937,10 +942,9 @@ static asmlinkage long fh_sys_mkdirat(struct pt_regs *regs)
 
 	ret = real_sys_mkdirat(regs);
 	fd = (long)(void *)regs->di;
-	//pr_info("FD: %d\n", fd);
 
+	// копируем имя файла из пространства пользователя в пространство ядра
 	kernel_filename = duplicate_filename((void *)regs->si);
-
 	if (kernel_filename == NULL)
 	{
 		pr_info("Unable to duplicate filename\n");
@@ -953,9 +957,13 @@ static asmlinkage long fh_sys_mkdirat(struct pt_regs *regs)
 	if (proc_filename == NULL || buffer == NULL || full_filename == NULL)
 	{
 		pr_info("Unable to allocate memory\n");
+		kfree(kernel_filename);
+		if (proc_filename != NULL) kfree(proc_filename);
+		if (buffer != NULL) kfree(buffer);
+		if (full_filename != NULL) kfree(full_filename);
 		return ret;
 	}
-
+	// если путь не является абсолютным, получаем абсолютный путь до файла, который связан с открытым файловым дескриптором
 	if (fd != AT_FDCWD && kernel_filename[0] != '/')
 	{
 		char *path;
@@ -970,6 +978,10 @@ static asmlinkage long fh_sys_mkdirat(struct pt_regs *regs)
 		if (pwd_buff == NULL)
 		{
 			pr_info("Unable to allocate memory\n");
+			kfree(kernel_filename);
+			kfree(proc_filename);
+			kfree(full_filename);
+			kfree(buffer);
 			return ret;
 		}
 		pwd = _file->f_path;
@@ -978,34 +990,27 @@ static asmlinkage long fh_sys_mkdirat(struct pt_regs *regs)
 		kfree(pwd_buff);
 
 		full_filename = strcat(full_filename, path);
-		//full_filename = strcat(full_filename, "/");
-		//full_filename = strcat(full_filename, kernel_filename);
-		//pr_info("FULL FNAME %s\n", full_filename);
 	}
-	else
+	else // путь абсолютный, ничего делать не надо
 	{
 		full_filename = strcpy(full_filename, kernel_filename);
 	}
-	pr_info("FULL FNAME %s, %s\n", full_filename, kernel_filename);
 
-	// if (strcmp(full_filename, "/home/lander/Desktop/BMSTU-OS-Course-Project/source/Makefile") == 0)
-	// {
-	// 	pr_info("FULL FNAME %s, %s\n", full_filename, kernel_filename);
-	// }
-
-
+	// проверяем, находится ли файл или директория в списке отслеживаемых
 	if (check_filename(full_filename, 0, 1) == 1)
 	{
-		//pr_info("Found");
 		char *buff = kmalloc(BUFF_SIZE * 2, GFP_KERNEL);
 		if (buff == NULL)
 		{
 			pr_info("Unable to allocate memory\n");
+			kfree(kernel_filename);
+			kfree(proc_filename);
+			kfree(full_filename);
+			kfree(buffer);
 			return ret;
 		}
 		snprintf(buff, BUFF_SIZE * 2, "Process %d MKDIR '%s' AT '%s'. Syscall returned %d\n",
 				 current->pid, kernel_filename, full_filename, ret);
-		pr_info("%s", buff);
 		write_log(buff);
 		kfree(buff);
 	}
@@ -1013,6 +1018,7 @@ static asmlinkage long fh_sys_mkdirat(struct pt_regs *regs)
 	kfree(kernel_filename);
 	kfree(proc_filename);
 	kfree(full_filename);
+	kfree(buffer);
 
 	return ret;
 }
@@ -1269,8 +1275,8 @@ static struct ftrace_hook fs_hooks[] = {
 	//HOOK("sys_creat", fh_sys_creat, &real_sys_creat), // tested
 	//HOOK("sys_unlink", fh_sys_unlink, &real_sys_unlink) // tested
 	//HOOK("sys_write", fh_sys_write, &real_sys_write), // tested
-	HOOK("sys_unlinkat", fh_sys_unlinkat, &real_sys_unlinkat), // done
-	//HOOK("sys_mkdirat", fh_sys_mkdirat, &real_sys_mkdirat) // done
+	//HOOK("sys_unlinkat", fh_sys_unlinkat, &real_sys_unlinkat), // tested
+	HOOK("sys_mkdirat", fh_sys_mkdirat, &real_sys_mkdirat) // tested
 };
 
 static int fh_init(void)
