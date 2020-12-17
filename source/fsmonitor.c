@@ -505,7 +505,6 @@ static asmlinkage long fh_sys_openat(struct pt_regs *regs)
 
 	ret = real_sys_openat(regs);
 	fd = (long)(void *)regs->di;
-	//pr_info("FD: %d\n", fd);
 
 	kernel_filename = duplicate_filename((void *)regs->si);
 
@@ -521,6 +520,10 @@ static asmlinkage long fh_sys_openat(struct pt_regs *regs)
 	if (proc_filename == NULL || buffer == NULL || full_filename == NULL)
 	{
 		pr_info("Unable to allocate memory\n");
+		kfree(kernel_filename);
+		if (proc_filename != NULL) kfree(proc_filename);
+		if (buffer != NULL) kfree(buffer);
+		if (full_filename != NULL) kfree(full_filename);
 		return ret;
 	}
 
@@ -538,6 +541,10 @@ static asmlinkage long fh_sys_openat(struct pt_regs *regs)
 		if (pwd_buff == NULL)
 		{
 			pr_info("Unable to allocate memory\n");
+			kfree(kernel_filename);
+			kfree(proc_filename);
+			kfree(full_filename);
+			kfree(buffer);
 			return ret;
 		}
 		pwd = _file->f_path;
@@ -548,27 +555,23 @@ static asmlinkage long fh_sys_openat(struct pt_regs *regs)
 		full_filename = strcat(full_filename, path);
 		full_filename = strcat(full_filename, "/");
 		full_filename = strcat(full_filename, kernel_filename);
-		//pr_info("FULL FNAME %s\n", full_filename);
 	}
 	else
 	{
 		full_filename = strcpy(full_filename, kernel_filename);
 	}
-	//pr_info("FULL FNAME %s, %s\n", full_filename, kernel_filename);
-
-	// if (strcmp(full_filename, "/home/lander/Desktop/BMSTU-OS-Course-Project/source/Makefile") == 0)
-	// {
-	// 	pr_info("FULL FNAME %s, %s\n", full_filename, kernel_filename);
-	// }
 
 
 	if (check_filename(full_filename, 1, 1) == 1)
 	{
-		//pr_info("Found");
 		char *buff = kmalloc(BUFF_SIZE * 2, GFP_KERNEL);
 		if (buff == NULL)
 		{
 			pr_info("Unable to allocate memory\n");
+			kfree(kernel_filename);
+			kfree(proc_filename);
+			kfree(full_filename);
+			kfree(buffer);
 			return ret;
 		}
 		snprintf(buff, BUFF_SIZE * 2, "Process %d OPENAT '%s'. Syscall returned %d\n",
@@ -581,6 +584,7 @@ static asmlinkage long fh_sys_openat(struct pt_regs *regs)
 	kfree(kernel_filename);
 	kfree(proc_filename);
 	kfree(full_filename);
+	kfree(buffer);
 
 	return ret;
 }
@@ -1085,8 +1089,8 @@ static asmlinkage long fh_sys_mkdir(struct pt_regs *regs)
 	}
 
 static struct ftrace_hook fs_hooks[] = {
-	HOOK("sys_mkdir", fh_sys_mkdir, &real_sys_mkdir), // done
-	//HOOK("sys_openat", fh_sys_openat, &real_sys_openat), // done
+	//HOOK("sys_mkdir", fh_sys_mkdir, &real_sys_mkdir), // tested
+	HOOK("sys_openat", fh_sys_openat, &real_sys_openat), // done
 	//HOOK("sys_creat", fh_sys_creat, &real_sys_creat), // done
 	//HOOK("sys_unlink", fh_sys_unlink, &real_sys_unlink) // done
 	//HOOK("sys_write", fh_sys_write, &real_sys_write), // done
