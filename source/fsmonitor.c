@@ -1269,7 +1269,7 @@ static int fh_init(void)
 		if (err == -2)
 			pr_info("Invalid config file format\n");
 		if (err == -3)
-			pr_info("Files writen in config does not exist\n");
+			pr_info("Files writen in config do not exist\n");
 		return err;
 	}
 
@@ -1286,6 +1286,7 @@ static int fh_init(void)
 	{
 		free_list(&monitor_dirs);
 		free_list(&monitor_files);
+	    pr_info("Unable to install hooks\n");
 		return err;
 	}
 
