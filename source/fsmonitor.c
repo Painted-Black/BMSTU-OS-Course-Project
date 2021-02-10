@@ -13,8 +13,6 @@
 #include <linux/timekeeping.h>
 #include <linux/stat.h>
 #include <linux/types.h>
-#include <linux/dcache.h>
-#include <asm/segment.h>
 #include <linux/buffer_head.h>
 #include <linux/fdtable.h>
 
